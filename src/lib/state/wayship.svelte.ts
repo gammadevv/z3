@@ -2,6 +2,8 @@ import { browser } from '$app/environment';
 import { client } from '$lib/ephaptic';
 import { isAndroid } from '$lib/platform';
 import type { PeerMode } from '$lib/peer-connection';
+import { DISCORD_PEER_PREFIX, DISCORD_PROTOCOL, DiscordRequests } from '$lib/wayship-discord';
+import { runDiscordCommand } from './discord-remote.svelte';
 import { peers } from './peers.svelte';
 import { toasts } from './toast.svelte';
 
@@ -63,6 +65,7 @@ class WayshipState {
     private pollTimer: ReturnType<typeof setInterval> | undefined;
     private ws: WebSocket | null = null;
     private autoConnectedPeers = new Set<string>();
+    private discordRequests = new DiscordRequests();
 
     readonly connected = $derived(this.token.startsWith('wsa_'));
     diagnostics = $state<string[]>([]);
@@ -216,7 +219,7 @@ class WayshipState {
                 meta: { platform: isAndroid ? 'android' : 'desktop' },
             }),
         });
-        this.onlinePeers = out.peers.filter((p) => p.peer_id !== this.peerId);
+        this.onlinePeers = out.peers.filter((p) => p.peer_id !== this.peerId && !p.peer_id.startsWith(DISCORD_PEER_PREFIX));
         this.log('announce', { self: this.peerId, peers: this.onlinePeers.map((peer) => ({ id: peer.peer_id, name: peer.device_name })) });
         if (out.ice_servers?.length) this.iceServers = out.ice_servers;
 
@@ -264,8 +267,15 @@ class WayshipState {
         payload?: any;
         ts?: number;
     }) {
-        if (!ev || ev.from_peer === this.peerId) return;
+        if (!ev || typeof ev.from_peer !== 'string' || ev.from_peer === this.peerId) return;
         if (ev.to_peer && ev.to_peer !== this.peerId) return;
+
+        if (ev.from_peer.startsWith(DISCORD_PEER_PREFIX)) {
+            if (ev.kind === 'signal' && ev.signal_kind === 'data' && ev.to_peer === this.peerId) {
+                void this.handleDiscordRequest(ev.from_peer, ev.payload);
+            }
+            return;
+        }
 
         if (ev.kind === 'join' || ev.kind === 'heartbeat') {
             const existing = this.onlinePeers.find((p) => p.peer_id === ev.from_peer);
@@ -309,6 +319,24 @@ class WayshipState {
                 this.peerId,
             ).catch((error) => this.log('signal handling failed', { error: String(error) }));
         }
+    }
+
+    private async handleDiscordRequest(fromPeer: string, payload: unknown) {
+        if (!this.connected) return;
+        const request = this.discordRequests.accept(fromPeer, payload);
+        if (!request) return;
+        const token = this.token;
+        const peerId = this.peerId;
+        const isCurrent = () => this.token === token && this.peerId === peerId && request.expiresAt > Date.now();
+        const result = await runDiscordCommand(request, isCurrent).catch(() => ({
+            ok: false, error: 'Zeta could not complete this request. Try again in the player.',
+        }));
+        if (!isCurrent()) return;
+        await this.sendSignal(fromPeer, 'data', {
+            protocol: DISCORD_PROTOCOL,
+            requestId: request.requestId,
+            ...result,
+        }).catch(() => {});
     }
 
     async sendSignal(toPeer: string, kind: 'offer' | 'answer' | 'ice' | 'data', payload: unknown) {
