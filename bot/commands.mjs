@@ -8,7 +8,7 @@ const serviceChoices = Object.entries(services).map(([value, name]) => ({ name, 
 const periodChoices = Object.entries(periods).map(([value, period]) => ({ name: period.name, value }));
 const command = (name, description) => new SlashCommandBuilder()
     .setName(name).setDescription(description)
-    .setIntegrationTypes(ApplicationIntegrationType.UserInstall)
+    .setIntegrationTypes(ApplicationIntegrationType.GuildInstall, ApplicationIntegrationType.UserInstall)
     .setContexts(InteractionContextType.Guild, InteractionContextType.BotDM, InteractionContextType.PrivateChannel);
 
 const service = (builder, { required = false, wayship = false } = {}) => builder.addStringOption((option) => option
@@ -19,7 +19,7 @@ const device = (builder) => builder.addStringOption((option) => option
 const query = (builder, required = true) => builder.addStringOption((option) => option
     .setName('song').setDescription('Song title and artist').setMinLength(1).setMaxLength(DISCORD_QUERY_LIMIT).setRequired(required));
 const share = (builder) => builder.addBooleanOption((option) => option
-    .setName('share').setDescription('Show the result in the channel'));
+    .setName('share').setDescription('Set to False to keep the reply private'));
 
 export const transport = {
     play: 'Play a song on a linked Zeta device',
@@ -60,3 +60,13 @@ export const commands = [
     device(command('queue', 'Show what is coming up on a linked Zeta device')),
     ...Object.entries(transport).map(([name, description]) => transportCommand(name, description)),
 ].map((builder) => builder.toJSON());
+
+export function commandsForInstallTypes(config) {
+    if (!config) return commands;
+    return commands.map((command) => ({
+        ...command,
+        integration_types: command.integration_types.filter((type) => Object.hasOwn(config, type)),
+        contexts: Object.hasOwn(config, ApplicationIntegrationType.UserInstall) ? command.contexts
+            : command.contexts.filter((context) => context !== InteractionContextType.PrivateChannel),
+    }));
+}

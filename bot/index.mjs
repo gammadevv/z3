@@ -1,7 +1,7 @@
 import { fileURLToPath } from 'node:url';
-import { Client, Events, GatewayIntentBits } from 'discord.js';
+import { ApplicationIntegrationType, Client, Events, GatewayIntentBits, PermissionFlagsBits } from 'discord.js';
 import { accounts } from './accounts.mjs';
-import { commands } from './commands.mjs';
+import { commandsForInstallTypes } from './commands.mjs';
 import { interactions } from './interactions.mjs';
 import { scrobbling } from './scrobbling.mjs';
 import { wayshipClient } from './wayship.mjs';
@@ -23,6 +23,8 @@ try {
     client.on(Events.Error, (error) => console.error('Discord Gateway error', error.name, error.code ?? ''));
     client.once(Events.ClientReady, async ({ application, user }) => {
         try {
+            await application.fetch();
+            const commands = commandsForInstallTypes(application.integrationTypesConfig);
             await application.commands.set(commands);
             console.log(`Connected as ${user.tag}. Registered ${commands.length} global Zeta commands.`);
             const install = new URL('https://discord.com/oauth2/authorize');
@@ -30,8 +32,16 @@ try {
                 client_id: application.id, integration_type: '1', scope: 'applications.commands',
             });
             console.log(`Add Zeta to your Discord account → ${install}`);
+            if (application.integrationTypesConfig?.[ApplicationIntegrationType.GuildInstall]) {
+                install.search = new URLSearchParams({
+                    client_id: application.id, integration_type: '0', scope: 'bot applications.commands',
+                    permissions: String(PermissionFlagsBits.SendMessages | PermissionFlagsBits.EmbedLinks |
+                        PermissionFlagsBits.AttachFiles | PermissionFlagsBits.SendMessagesInThreads),
+                });
+                console.log(`Add Zeta to your Discord server → ${install}`);
+            }
         } catch (error) {
-            console.error('Could not register Zeta commands. Check that User Install is enabled.', error.name, error.code ?? '');
+            console.error('Could not register Zeta commands. Check the application’s installation settings.', error.name, error.code ?? '');
             client.destroy();
             process.exitCode = 1;
         }

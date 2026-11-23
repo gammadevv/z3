@@ -4,22 +4,26 @@ import { mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { ApplicationIntegrationType, ComponentType, InteractionContextType, MessageFlags } from 'discord.js';
+import {
+    ApplicationIntegrationType, ComponentType, InteractionContextType, MessageFlags, PermissionFlagsBits, PermissionsBitField,
+} from 'discord.js';
 import { DISCORD_PROTOCOL, DiscordRequests, readDiscordRequest } from '../src/lib/wayship-discord.ts';
 import { accounts } from './accounts.mjs';
-import { commands } from './commands.mjs';
+import { commands, commandsForInstallTypes } from './commands.mjs';
 import { interactions } from './interactions.mjs';
 import { scrobbling } from './scrobbling.mjs';
 import { wayshipClient } from './wayship.mjs';
 
-test('global commands support account installs in servers and DMs', () => {
+test('global commands support both installation types when enabled', () => {
     assert.equal(new Set(commands.map(({ name }) => name)).size, commands.length);
     for (const command of commands) {
-        assert.deepEqual(command.integration_types, [ApplicationIntegrationType.UserInstall]);
+        assert.deepEqual(command.integration_types, [ApplicationIntegrationType.GuildInstall, ApplicationIntegrationType.UserInstall]);
         assert.deepEqual(command.contexts, [
             InteractionContextType.Guild, InteractionContextType.BotDM, InteractionContextType.PrivateChannel,
         ]);
     }
+    const accountOnly = commandsForInstallTypes({ [ApplicationIntegrationType.UserInstall]: {} });
+    assert.ok(accountOnly.every((command) => command.integration_types.join() === String(ApplicationIntegrationType.UserInstall)));
 });
 
 test('playback commands reject malformed input and run once across duplicate deliveries', () => {
@@ -153,13 +157,57 @@ test('Discord /playing uses the invoking user and falls back to their recent scr
         isButton: () => false,
         isModalSubmit: () => false,
         isChatInputCommand: () => true,
+        inGuild: () => false,
         user: { id: '100' },
         commandName: 'playing',
         options: { getString: () => null, getBoolean: () => null },
-        deferReply: async ({ flags }) => assert.equal(flags, MessageFlags.Ephemeral),
+        deferReply: async ({ flags }) => assert.equal(flags, undefined),
         editReply: async (reply) => { replies.push(reply); },
     });
-    assert.match(replies[0].content, /Last played.*My last track.*ListenBrainz/s);
+    const embed = replies[0].embeds[0].toJSON();
+    assert.equal(embed.title, 'Last played');
+    assert.match(embed.description, /My last track.*ListenBrainz/s);
+});
+
+test('guild replies respect installation, channel permissions, and privacy', async () => {
+    const { SendMessages, SendMessagesInThreads, EmbedLinks, UseExternalApps } = PermissionFlagsBits;
+    const handle = interactions({ accounts: { get: () => ({}) } });
+
+    async function run({ installed = false, perms = [], external = false, share = null, name = 'help', isThread = false }) {
+        const replies = [];
+        let flags;
+        await handle({
+            isButton: () => false,
+            isModalSubmit: () => false,
+            isChatInputCommand: () => true,
+            inGuild: () => true,
+            guildId: 'server',
+            channel: { isThread: () => isThread },
+            authorizingIntegrationOwners: { guildId: installed ? 'server' : null },
+            appPermissions: new PermissionsBitField(perms),
+            memberPermissions: new PermissionsBitField(external ? [UseExternalApps] : []),
+            user: { id: '100' },
+            commandName: name,
+            options: { getString: () => null, getBoolean: () => share },
+            deferReply: async (reply) => { flags = reply.flags; },
+            editReply: async (reply) => { replies.push(reply); },
+        });
+        return { ...replies[0], flags };
+    }
+
+    const guild = { installed: true, perms: [SendMessages, EmbedLinks] };
+    const publicEmbed = await run(guild);
+    assert.equal(publicEmbed.flags, undefined);
+    assert.equal(publicEmbed.embeds[0].toJSON().title, 'Zeta for Discord');
+    assert.equal((await run({ ...guild, name: 'profile' })).flags, MessageFlags.Ephemeral);
+    assert.equal((await run({ ...guild, share: false })).flags, MessageFlags.Ephemeral);
+    assert.equal((await run({ ...guild, isThread: true })).flags, MessageFlags.Ephemeral);
+    assert.equal((await run({ ...guild, isThread: true, perms: [SendMessagesInThreads, EmbedLinks] })).flags, undefined);
+    const plain = await run({ installed: true, perms: [SendMessages] });
+    assert.match(plain.content, /Zeta for Discord/);
+    assert.equal(plain.embeds, undefined);
+    assert.equal((await run({ external: true, perms: [EmbedLinks] })).flags, undefined);
+    assert.equal((await run({ perms: [EmbedLinks] })).flags, MessageFlags.Ephemeral);
 });
 
 test('Wayship link modal keeps the credential out of the response and saves it for the submitting account', async () => {
@@ -184,13 +232,14 @@ test('Wayship link modal keeps the credential out of the response and saves it f
     await handle({
         isButton: () => false,
         isModalSubmit: () => true,
+        inGuild: () => false,
         customId: 'zeta:wayship:connect',
         user: { id: '101' },
         fields: { getTextInputValue: () => token },
-        deferReply: async ({ flags }) => assert.equal(flags, MessageFlags.Ephemeral),
-        editReply: async ({ content }) => {
-            assert.match(content, /Connected to Wayship/);
-            assert.ok(!content.includes(token));
+        deferReply: async ({ flags }) => assert.equal(flags, undefined),
+        editReply: async ({ embeds }) => {
+            assert.equal(embeds[0].toJSON().title, 'Connected to Wayship');
+            assert.ok(!JSON.stringify(embeds).includes(token));
         },
     });
 });

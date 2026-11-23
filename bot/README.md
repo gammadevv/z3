@@ -1,8 +1,9 @@
 # Zeta for Discord
 
 Zeta's Discord app shows listening activity and controls an online Zeta player.
-It installs to your Discord account under **Add to My Apps** and can be used
-in servers and DMs where Discord allows apps.
+Install it under **Add to My Apps** or add it to a server. Replies appear in DMs
+and in channels where Discord permits them. Connection settings stay private in
+shared channels.
 
 ## Run the bot
 
@@ -11,6 +12,10 @@ Use Node.js 24.17 or later. Create a dedicated app in the
 Under **Installation**, enable **User Install** and add the `applications.commands`
 scope to its default install settings. Leave **Interactions Endpoint URL** empty
 so Discord sends commands over its Gateway.
+
+For server installs, also enable **Guild Install**. Add the `bot` and
+`applications.commands` scopes with **Send Messages**, **Embed Links**,
+**Attach Files**, and **Send Messages in Threads** permissions.
 
 From the repository root:
 
@@ -27,8 +32,9 @@ npm --prefix bot start
 ```
 
 Keep the bot process running. Startup syncs this app's global commands and prints
-its user-install link. Open that link and select **Add to My Apps**. Discord may
-take a moment to propagate changes to slash commands.
+its install links. Discord may take a moment to propagate changes to slash
+commands. For an app added to an account only, a server can restrict public
+replies with its **Use External Apps** permission.
 
 ## Connect accounts
 
@@ -52,7 +58,7 @@ Set `ZETA_BOT_DATA_DIR` to put it elsewhere. Use one bot process per data direct
 | Command | What it does |
 | --- | --- |
 | `/playing` | Shows live Zeta playback or the linked scrobbling service's live track. If neither is available, it can show the last played track. |
-| `/recent`, `/toptracks`, `/topartists` | Shows data from the selected listening profile. Set `share:True` to post a listening result in the channel. |
+| `/recent`, `/toptracks`, `/topartists` | Shows data from the selected listening profile. Set `share:False` to reply privately. |
 | `/devices`, `/queue` | Lists online Zeta devices and the selected player's upcoming tracks. |
 | `/play`, `/playnext`, `/enqueue` | Searches by song and artist, then starts playback or adds the match to the queue. |
 | `/skip`, `/previous`, `/pause`, `/unpause` | Controls an online Zeta player. |
