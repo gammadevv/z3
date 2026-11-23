@@ -5,6 +5,7 @@ import type { PeerMode } from '$lib/peer-connection';
 import { DISCORD_PEER_PREFIX, DISCORD_PROTOCOL, DiscordRequests } from '$lib/wayship-discord';
 import { nextWayshipRetry, WayshipHttpError, WayshipSignalInbox } from '$lib/wayship-recovery';
 import { runDiscordCommand } from './discord-remote.svelte';
+import { discordVoice } from './discord-voice.svelte';
 import { peers } from './peers.svelte';
 import { toasts } from './toast.svelte';
 
@@ -492,6 +493,7 @@ class WayshipState {
         const prevToken = this.token;
         const prevPeerId = this.peerId;
         this.stopSession();
+        discordVoice.stop();
         if (notifyServer && prevToken.startsWith('wsa_')) {
             void fetch(`${WAYSHIP_API}/peers/leave`, {
                 method: 'POST',

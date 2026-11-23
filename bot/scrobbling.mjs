@@ -61,12 +61,19 @@ export function scrobbling(apiKey, fetcher = fetch) {
     async function recent(service, username, limit = 5, includeLive = false) {
         if (service === 'lastfm') {
             const data = await lastfm('user.getRecentTracks', username, { limit: String(limit) });
-            return list(data.recenttracks?.track).map((track) => ({
-                title: track.name,
-                artist: track.artist?.['#text'],
-                playing: track['@attr']?.nowplaying === 'true',
-                time: Number(track.date?.uts) || 0,
-            })).filter((track) => track.title);
+            return list(data.recenttracks?.track).map((track) => {
+                const coverUrl = list(track.image).findLast((size) => size?.['#text'])?.['#text'];
+                const album = track.album?.['#text'];
+                return {
+                    title: track.name,
+                    artist: track.artist?.['#text'],
+                    playing: track['@attr']?.nowplaying === 'true',
+                    time: Number(track.date?.uts) || 0,
+                    ...(album && { album }),
+                    ...(track.url && { url: track.url }),
+                    ...(coverUrl && { coverUrl }),
+                };
+            }).filter((track) => track.title);
         }
 
         const path = `/user/${encodeURIComponent(username)}`;
@@ -106,10 +113,18 @@ export function scrobbling(apiKey, fetcher = fetch) {
 }
 
 function listenBrainzTrack(track, playing) {
+    const metadata = track.track_metadata;
+    const album = metadata?.release_name;
+    const cover = metadata?.mbid_mapping;
+    const coverUrl = Number.isSafeInteger(cover?.caa_id) && cover.caa_id > 0 &&
+        /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(cover.caa_release_mbid ?? '')
+        ? `https://coverartarchive.org/release/${cover.caa_release_mbid}/${cover.caa_id}-250.jpg` : undefined;
     return {
-        title: track.track_metadata?.track_name,
-        artist: track.track_metadata?.artist_name,
+        title: metadata?.track_name,
+        artist: metadata?.artist_name,
         time: track.listened_at ?? 0,
         playing,
+        ...(album && { album }),
+        ...(coverUrl && { coverUrl }),
     };
 }

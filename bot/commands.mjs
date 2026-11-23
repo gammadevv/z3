@@ -1,5 +1,5 @@
 import {
-    ApplicationIntegrationType, InteractionContextType, SlashCommandBuilder,
+    ApplicationCommandType, ApplicationIntegrationType, InteractionContextType, SlashCommandBuilder,
 } from 'discord.js';
 import { DISCORD_QUERY_LIMIT } from '../src/lib/wayship-discord.ts';
 import { periods, services } from './scrobbling.mjs';
@@ -20,6 +20,8 @@ const query = (builder, required = true) => builder.addStringOption((option) => 
     .setName('song').setDescription('Song title and artist').setMinLength(1).setMaxLength(DISCORD_QUERY_LIMIT).setRequired(required));
 const share = (builder) => builder.addBooleanOption((option) => option
     .setName('share').setDescription('Set to False to keep the reply private'));
+const voiceCommand = (name, description) => command(name, description)
+    .setIntegrationTypes(ApplicationIntegrationType.GuildInstall).setContexts(InteractionContextType.Guild);
 
 export const transport = {
     play: 'Play a song on a linked Zeta device',
@@ -46,7 +48,9 @@ function transportCommand(name, description) {
 
 export const commands = [
     command('help', 'Show Zeta Discord commands'),
-    command('wayship', 'Connect your Wayship account for Zeta playback controls'),
+    command('wayship', 'Connect Wayship or link a Zeta Activity')
+        .addStringOption((option) => option.setName('activity-code').setDescription('Link the current Activity with its displayed code')
+            .setMinLength(8).setMaxLength(8)),
     service(command('link', 'Link a scrobbling profile by username'), { required: true })
         .addStringOption((option) => option.setName('username').setDescription('Your public profile username')
             .setMinLength(1).setMaxLength(128).setRequired(true)),
@@ -57,6 +61,9 @@ export const commands = [
     ...['tracks', 'artists'].map((kind) => share(service(command(`top${kind}`, `Show your most-listened-to ${kind}`))
         .addStringOption((option) => option.setName('period').setDescription('Time period').addChoices(...periodChoices)))),
     command('devices', 'List online Zeta devices on your Wayship account'),
+    share(device(query(command('album', 'Show album art and release details for a track'), false))),
+    device(voiceCommand('join', 'Play your desktop Zeta audio in your voice channel')),
+    voiceCommand('leave', 'Stop sharing Zeta audio and leave the voice channel'),
     device(command('queue', 'Show what is coming up on a linked Zeta device')),
     ...Object.entries(transport).map(([name, description]) => transportCommand(name, description)),
 ].map((builder) => builder.toJSON());
@@ -68,5 +75,22 @@ export function commandsForInstallTypes(config) {
         integration_types: command.integration_types.filter((type) => Object.hasOwn(config, type)),
         contexts: Object.hasOwn(config, ApplicationIntegrationType.UserInstall) ? command.contexts
             : command.contexts.filter((context) => context !== InteractionContextType.PrivateChannel),
-    }));
+    })).filter((command) => command.integration_types.length);
+}
+
+export async function syncZetaCommands(application) {
+    // Compare the JSON Discord receives. Builders leave undefined properties
+    // on command objects, while Discord returns explicit defaults for them.
+    const desired = commandsForInstallTypes(application.integrationTypesConfig)
+        .map((command) => JSON.parse(JSON.stringify(command)));
+    const registered = await application.commands.fetch({ withLocalizations: true });
+    const slashByName = new Map([...registered.values()]
+        .filter(({ type }) => type === ApplicationCommandType.ChatInput)
+        .map((entry) => [entry.name, entry]));
+
+    // Discord manages the Activity's Launch entry point separately. Upsert only
+    // Zeta's slash commands, leaving the entry point and other commands intact.
+    const changed = desired.filter((command) => !slashByName.get(command.name)?.equals(command));
+    await Promise.all(changed.map((command) => application.commands.create(command)));
+    return { total: desired.length, updated: changed.length };
 }

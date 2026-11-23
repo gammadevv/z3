@@ -125,9 +125,12 @@ export function wayshipClient(fetcher = fetch) {
                 throw new BotError('No player replied. Open Zeta with Discord bot support and try again.');
             }
 
-            const readOnly = command.action === 'status' || command.action === 'lyrics';
-            const eligible = available.filter(({ result }) => result.playback.controllable || readOnly);
+            const readOnly = ['status', 'lyrics', 'album', 'activity-media'].includes(command.action);
+            const voice = command.action === 'voice-start';
+            const eligible = available.filter(({ result }) => (result.playback.controllable || readOnly) &&
+                (!voice || result.playback.voiceAvailable));
             if (!eligible.length) {
+                if (voice) throw new BotError('Open the updated desktop Zeta music player on the computer running the bot.');
                 throw new BotError('The available devices are following another player. Open or select the playback host.');
             }
             const [device] = eligible.sort((a, b) => rank(b.result.playback) - rank(a.result.playback) ||

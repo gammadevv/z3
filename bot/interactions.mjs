@@ -24,11 +24,33 @@ function canEmbed(interaction) {
     return !interaction.inGuild() || interaction.appPermissions?.has(PermissionFlagsBits.EmbedLinks);
 }
 
-function replyOptions(interaction, { title, description, color = ACCENT, files, components }) {
+function secureUrl(value) {
+    if (typeof value !== 'string' || value.length > 2000) return undefined;
+    const url = URL.parse(value);
+    return url?.protocol === 'https:' && !url.username && !url.password ? url.href : undefined;
+}
+
+function trackCard(title, track, context) {
+    const release = [clean(track.album), clean(track.year, 16)].filter(Boolean).join(' · ');
+    const url = secureUrl(track.url);
+    return {
+        ...card(title, [
+            `**${trackLabel(track)}**`,
+            release,
+            context || (track.duration > 0 ? clock(track.duration) : ''),
+            url && `[Open track](<${url}>)`,
+        ].filter(Boolean).join('\n')),
+        thumbnail: track.coverUrl,
+    };
+}
+
+function replyOptions(interaction, { title, description, color = ACCENT, files, components, thumbnail }) {
     const options = { allowedMentions: { parse: [] }, files, components };
     if (canEmbed(interaction)) {
         const embed = new EmbedBuilder().setTitle(title.slice(0, 256)).setColor(color);
         if (description) embed.setDescription(description.slice(0, 4096));
+        const cover = secureUrl(thumbnail);
+        if (cover) embed.setThumbnail(cover);
         return { ...options, embeds: [embed] };
     }
     return { ...options, content: [`**${title}**`, description].filter(Boolean).join('\n').slice(0, 2000),
@@ -76,7 +98,7 @@ function playbackLabel({ name, result: { playback } }) {
     if (!playback.track) return card('Nothing playing', `No track is loaded on **${clean(name)}**.`);
     const verb = { playing: 'Now playing', paused: 'Paused', loading: 'Loading' }[playback.phase] ?? 'Current track';
     const time = playback.duration > 0 ? ` · ${clock(playback.position)} / ${clock(playback.duration)}` : '';
-    return card(verb, `**${trackLabel(playback.track)}**\nZeta · ${clean(name)}${time}`);
+    return trackCard(verb, playback.track, `Zeta · ${clean(name)}${time}`);
 }
 
 function pickService(profile, requested) {
@@ -88,14 +110,15 @@ function pickService(profile, requested) {
 function help() {
     return card('Zeta for Discord', [
         '**Connect** · /wayship, /link, /unlink, /profile, /devices',
-        '**Listening** · /playing, /recent, /toptracks, /topartists, /lyrics',
+        '**Listening** · /playing, /recent, /toptracks, /topartists, /album, /lyrics',
         '**Player** · /play, /playnext, /enqueue, /queue, /skip, /previous, /pause, /unpause, /seek, /volume',
+        '**Server voice** · /join, /leave',
         '',
         'Run /wayship to control a Zeta device. Use /link to look up your Last.fm or ListenBrainz profile by username. Set `share: False` on a listening command to keep its reply private.',
     ].join('\n'));
 }
 
-export function interactions({ accounts, scrobbling, wayship }) {
+export function interactions({ accounts, scrobbling, wayship, voice, activity }) {
     async function playing(profile, requested, device) {
         if (requested && device) throw new BotError('Choose a listening service or a Zeta device.');
         const lookups = (requested ? [pickService(profile, requested)] : Object.keys(services).filter((key) => profile[key]))
@@ -118,12 +141,12 @@ export function interactions({ accounts, scrobbling, wayship }) {
         const history = await scrobbles;
         const items = history.flatMap((entry) => entry.status === 'fulfilled' ? entry.value : []);
         const active = items.find(({ playing }) => playing);
-        if (active) return card('Now playing', `**${trackLabel(active)}**\n${services[active.service]}`);
+        if (active) return trackCard('Now playing', active, services[active.service]);
         if (zeta?.result.playback.track) return playbackLabel(zeta);
         const latest = items.sort((a, b) => b.time - a.time)[0];
         if (latest) {
             const time = latest.time > 0 && latest.time < 10_000_000_000 ? ` · <t:${Math.floor(latest.time)}:R>` : '';
-            return card('Last played', `**${trackLabel(latest)}**\n${services[latest.service]}${time}`);
+            return trackCard('Last played', latest, `${services[latest.service]}${time}`);
         }
         if (zeta) return playbackLabel(zeta);
         if (requested && history[0]?.status === 'rejected') throw history[0].reason;
@@ -137,6 +160,7 @@ export function interactions({ accounts, scrobbling, wayship }) {
         const { commandName, options, user } = interaction;
         const requested = options.getString('service');
         const device = options.getString('device');
+        const targetDevice = device || (!requested ? voice?.deviceFor(interaction) : undefined);
         const token = profile.wayship?.token;
 
         switch (commandName) {
@@ -160,16 +184,43 @@ export function interactions({ accounts, scrobbling, wayship }) {
             case 'unlink':
                 if (!profile[requested]) return card('Already disconnected', 'There is no saved connection for this service.');
                 accounts.set(user.id, requested, null);
+                if (requested === 'wayship') voice?.stopFor(user.id);
                 return card('Connection removed', requested === 'wayship'
                     ? 'Wayship connection removed. You can revoke the Discord Bot connection from Wayship’s Connected apps page.'
                     : `${services[requested]} profile removed.`);
             case 'playing':
-                return playing(profile, requested, device);
+                return playing(profile, requested, targetDevice);
+            case 'album': {
+                const song = options.getString('song')?.trim();
+                const { result: { track, album } } = await wayship.run(token, {
+                    action: 'album', ...(song && { query: song }),
+                }, targetDevice);
+                if (!track) throw new BotError('Zeta could not find a track to look up.');
+                if (!album) return trackCard('Album information unavailable', track);
+                const url = secureUrl(album.url);
+                return {
+                    ...card(clean(album.title, 120), [
+                        [clean(album.artist), clean(album.year, 16), album.trackCount > 0 && `${album.trackCount} tracks`]
+                            .filter(Boolean).join(' · '),
+                        album.tracks?.length && numberList(album.tracks, (entry) => trackLabel(entry, 75)),
+                        url && `[Open album](<${url}>)`,
+                    ].filter(Boolean).join('\n\n')),
+                    thumbnail: album.coverUrl,
+                };
+            }
+            case 'join': {
+                const { deviceName, channelName } = await voice.join(interaction, token, device);
+                return card('Zeta is in voice', `**${clean(deviceName)}** is sharing audio in **${clean(channelName)}**. Use /play to choose a song or /leave to stop sharing.`);
+            }
+            case 'leave':
+                return voice.leave(interaction) ? card('Left the voice channel', 'Zeta audio sharing has ended.')
+                    : card('Zeta is not in voice', 'Use /join from a voice channel to start sharing.');
             case 'recent': {
                 const service = pickService(profile, requested);
                 const tracks = (await scrobbling.recent(service, profile[service], 5)).filter(({ playing }) => !playing);
                 const lines = numberList(tracks, (track) => trackLabel(track, 75));
-                return card(`Recent listens · ${services[service]}`, lines || 'No recent listens found.');
+                return { ...card(`Recent listens · ${services[service]}`, lines || 'No recent listens found.'),
+                    thumbnail: tracks.find((track) => track.coverUrl)?.coverUrl };
             }
             case 'toptracks': case 'topartists': {
                 const kind = commandName === 'toptracks' ? 'tracks' : 'artists';
@@ -191,9 +242,10 @@ export function interactions({ accounts, scrobbling, wayship }) {
                 return card('Your Zeta devices', lines.join('\n'));
             }
             case 'queue': {
-                const { name, result } = await wayship.run(token, { action: 'status' }, device);
+                const { name, result } = await wayship.run(token, { action: 'status' }, targetDevice);
                 const lines = numberList(result.playback.queue, (track) => trackLabel(track, 75));
-                return card(`Up next on ${clean(name, 60)}`, lines || 'The queue is empty.');
+                return { ...card(`Up next on ${clean(name, 60)}`, lines || 'The queue is empty.'),
+                    thumbnail: result.playback.queue[0]?.coverUrl };
             }
         }
 
@@ -205,13 +257,13 @@ export function interactions({ accounts, scrobbling, wayship }) {
             action: commandName,
             ...(song && { query: song }),
             ...(value !== null && { value }),
-        }, device);
+        }, targetDevice);
         const target = `**${clean(name, 60)}**`;
 
         switch (commandName) {
-            case 'play': return card('Playing on Zeta', `Selected **${trackLabel(result.track)}** for playback on ${target}.`);
-            case 'playnext': return card('Playing next', `**${trackLabel(result.track)}** on ${target}.`);
-            case 'enqueue': return card('Added to queue', `**${trackLabel(result.track)}** on ${target}.`);
+            case 'play': return trackCard('Playing on Zeta', result.track, `Selected for playback on ${target}.`);
+            case 'playnext': return trackCard('Playing next', result.track, `Player · ${target}`);
+            case 'enqueue': return trackCard('Added to queue', result.track, `Player · ${target}`);
             case 'skip': return card('Skipped track', `Player · ${target}`);
             case 'previous': return card('Previous track', `Player · ${target}`);
             case 'pause': return card('Paused', `Player · ${target}`);
@@ -250,6 +302,14 @@ export function interactions({ accounts, scrobbling, wayship }) {
             const profile = accounts.get(interaction.user.id);
             const display = visibility(interaction, PRIVATE_COMMANDS.has(interaction.commandName), interaction.options.getBoolean('share'));
             if (interaction.commandName === 'wayship') {
+                const code = interaction.options.getString('activity-code');
+                if (code) {
+                    if (!activity) throw new BotError('This bot is not serving a Zeta Activity.');
+                    activity.link(code, interaction.user.id);
+                    await interaction.reply(immediateReply(interaction,
+                        card('Activity linked', 'Return to the Zeta Activity to control your player.'), display));
+                    return;
+                }
                 await interaction.reply(immediateReply(interaction, wayshipPrompt(profile.wayship?.handle), display));
                 return;
             }
