@@ -4,6 +4,7 @@ import { homedir, tmpdir } from 'node:os';
 import { delimiter, isAbsolute, join } from 'node:path';
 import { promisify } from 'node:util';
 import { MAX_BITRATE_KBPS, type AudioQuality } from '../../src/lib/audio-quality.ts';
+import { managedYtDlp, ytDlpCommand } from './yt-dlp-install.ts';
 
 const execFileAsync = promisify(execFile);
 const MAX_COOKIE_FILE_BYTES = 1024 * 1024;
@@ -83,7 +84,7 @@ export async function downloadWithYtDlp(
             args.push('--cookies', privateCopy);
         }
 
-        const executable = process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp';
+        const executable = await managedYtDlp() ?? ytDlpCommand;
         const url = `https://www.youtube.com/watch?v=${videoId}`;
         const options = {
             cwd: temp,
@@ -103,7 +104,7 @@ export async function downloadWithYtDlp(
         });
         const { stdout } = await download.catch((error: NodeJS.ErrnoException & { stderr?: Buffer; killed?: boolean }) => {
             if (error.code === 'ENOENT') {
-                throw new Error('Zeta could not find yt-dlp. Install it in a standard location or add it to your PATH, then reopen Zeta.');
+                throw new Error('Zeta could not install or find yt-dlp. Check your connection to GitHub or install yt-dlp and add it to PATH.');
             }
             if (error.killed) throw new Error('The YouTube download via yt-dlp timed out.');
             const stderr = error.stderr?.toString() ?? '';

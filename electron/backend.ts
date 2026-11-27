@@ -15,6 +15,7 @@
 import type { MessageEvent } from 'electron';
 import { routes } from './routes/music';
 import { coverUrl } from '../src/lib/covers';
+import { managedYtDlp } from './lib/yt-dlp-install';
 
 interface ParentPort {
     on(event: 'message', listener: (event: MessageEvent) => void): void;
@@ -24,6 +25,8 @@ interface ParentPort {
 const port = (process as unknown as { parentPort: ParentPort }).parentPort;
 
 const table = routes as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>;
+
+void managedYtDlp();
 
 /**
  * Replace byte views that are windows onto a larger buffer with standalone

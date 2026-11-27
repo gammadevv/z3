@@ -12,6 +12,7 @@ on:
 
 env:
   RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+  VITE_ZETA_RELEASE_REPO: ${{ github.repository }}
 
 concurrency:
   group: release-${{ github.event.inputs.tag || github.ref_name }}
@@ -41,7 +42,7 @@ jobs:
           if (process.env.RELEASE_TAG !== `v${version}`) throw new Error('Tag and package version must match.');
           const gradle = readFileSync('android/app/build.gradle', 'utf8');
           if (!gradle.includes(`versionName "${version}"`)) throw new Error('Android version must match the release.');
-          if (!process.env.VITE_LASTFM_API_KEY || !process.env.VITE_LASTFM_API_SECRET) throw new Error('Last.fm build credentials are missing from repository secrets.');
+          if (process.env.GITHUB_REPOSITORY === 'zeta-zx/z3' && (!process.env.VITE_LASTFM_API_KEY || !process.env.VITE_LASTFM_API_SECRET)) throw new Error('Last.fm build credentials are missing from repository secrets.');
           JS
       - run: npm ci
       - run: npm run check
@@ -106,7 +107,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npx electron-builder --publish=always
+        run: npx electron-builder --publish=always -c.publish.provider=github -c.publish.owner="${GITHUB_REPOSITORY_OWNER}" -c.publish.repo="${GITHUB_REPOSITORY#*/}" -c.publish.releaseType=draft
+        shell: bash
 
   build-android:
     needs: prepare-release
@@ -179,11 +181,13 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 24
-      - name: Verify every desktop asset and the Android APK, then publish
+      - name: Verify every desktop asset and the Android APK
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           gh release view "$RELEASE_TAG" --json assets > "$RUNNER_TEMP/zeta-release-assets.json"
           node scripts/verify-release.mjs "$RUNNER_TEMP/zeta-release-assets.json"
-          gh release edit "$RELEASE_TAG" --draft=false --latest
+          if [ "$GITHUB_REPOSITORY" = 'zeta-zx/z3' ]; then
+            gh release edit "$RELEASE_TAG" --draft=false --latest
+          fi

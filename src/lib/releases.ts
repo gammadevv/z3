@@ -1,5 +1,6 @@
-export const RELEASES_URL = 'https://github.com/zeta-zx/z3/releases';
-export const LATEST_RELEASE_API = 'https://api.github.com/repos/zeta-zx/z3/releases/latest';
+const releaseRepo = import.meta.env?.VITE_ZETA_RELEASE_REPO || 'zeta-zx/z3';
+export const RELEASES_URL = `https://github.com/${releaseRepo}/releases`;
+export const LATEST_RELEASE_API = `https://api.github.com/repos/${releaseRepo}/releases/latest`;
 
 export interface UpdateStatus {
     current: string;
