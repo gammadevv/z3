@@ -118,7 +118,7 @@ function help() {
     ].join('\n'));
 }
 
-export function interactions({ accounts, scrobbling, wayship, voice, activity }) {
+export function interactions({ accounts, scrobbling, wayship, voice }) {
     async function playing(profile, requested, device) {
         if (requested && device) throw new BotError('Choose a listening service or a Zeta device.');
         const lookups = (requested ? [pickService(profile, requested)] : Object.keys(services).filter((key) => profile[key]))
@@ -284,6 +284,7 @@ export function interactions({ accounts, scrobbling, wayship, voice, activity })
     }
 
     return async function onInteraction(interaction) {
+        const receivedAt = Date.now();
         try {
             if (interaction.isButton() && interaction.customId === CONNECT_BUTTON) {
                 await interaction.showModal(tokenModal());
@@ -299,27 +300,27 @@ export function interactions({ accounts, scrobbling, wayship, voice, activity })
             }
             if (!interaction.isChatInputCommand()) return;
 
-            const profile = accounts.get(interaction.user.id);
             const display = visibility(interaction, PRIVATE_COMMANDS.has(interaction.commandName), interaction.options.getBoolean('share'));
+            await interaction.deferReply(display);
+            const profile = accounts.get(interaction.user.id);
             if (interaction.commandName === 'wayship') {
-                const code = interaction.options.getString('activity-code');
-                if (code) {
-                    if (!activity) throw new BotError('This bot is not serving a Zeta Activity.');
-                    activity.link(code, interaction.user.id);
-                    await interaction.reply(immediateReply(interaction,
-                        card('Activity linked', 'Return to the Zeta Activity to control your player.'), display));
-                    return;
-                }
-                await interaction.reply(immediateReply(interaction, wayshipPrompt(profile.wayship?.handle), display));
+                await interaction.editReply(replyOptions(interaction, wayshipPrompt(profile.wayship?.handle)));
                 return;
             }
 
-            await interaction.deferReply(display);
             const result = await handleCommand(interaction, profile);
             await interaction.editReply(replyOptions(interaction, result));
         } catch (error) {
             // Avoid logging HTTP bodies or modal input that could contain a token.
-            if (!(error instanceof BotError)) console.error('Discord interaction failed', error.name, error.code ?? '');
+            if (!(error instanceof BotError)) {
+                console.error('Discord interaction failed', error.name, error.code ?? '', {
+                    command: interaction.commandName,
+                    queuedMs: receivedAt - (interaction.createdTimestamp ?? receivedAt),
+                    elapsedMs: Date.now() - receivedAt,
+                    acknowledged: interaction.deferred || interaction.replied || false,
+                });
+            }
+            if (error.code === 10062 || error.code === 40060) return;
             const message = error instanceof BotError ? clean(error.message, 450) : 'Zeta could not finish that command. Try again.';
             const response = { ...card('Zeta couldn’t complete that', message), color: ERROR };
             await (interaction.deferred

@@ -125,7 +125,7 @@ export function wayshipClient(fetcher = fetch) {
                 throw new BotError('No player replied. Open Zeta with Discord bot support and try again.');
             }
 
-            const readOnly = ['status', 'lyrics', 'album', 'activity-media'].includes(command.action);
+            const readOnly = ['status', 'lyrics', 'album'].includes(command.action);
             const voice = command.action === 'voice-start';
             const eligible = available.filter(({ result }) => (result.playback.controllable || readOnly) &&
                 (!voice || result.playback.voiceAvailable));

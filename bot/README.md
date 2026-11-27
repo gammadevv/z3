@@ -90,32 +90,6 @@ Use `/leave` or **Stop Discord audio** in Zeta to end the session. The bot
 also leaves when the session host leaves the voice channel. One local voice
 session can be active at a time.
 
-## Using the same Discord app for an Activity
-
-Build the Activity frontend and set `ZETA_ACTIVITY_PORT` in `bot/.env` before
-starting the bot. The server listens on loopback and serves the Activity and
-its player API on the same port.
-
-```sh
-npm --prefix bot run build:activity
-npm --prefix bot start
-```
-
-Expose that port through a public HTTPS host or development tunnel. In the same
-Discord app's Developer Portal, enable **Activities** and map `/` under
-**Activities → URL Mappings** to that host. The Activity appears in the App
-Launcher. The bot updates its slash commands individually so Discord's
-Activity entry point stays registered.
-
-Open Zeta Music and connect it to Wayship. In the Activity, choose **Get link
-code** and run the displayed `/wayship activity-code:…` command from the
-Discord account already linked to Wayship. The Activity displays that
-account's Zeta queue and sends its controls to the running Zeta app. The
-server voice session supplies audio when you use `/join` in a server VC.
-
-[Build an Activity](https://docs.discord.com/developers/activities/building-an-activity) ·
-[Activity networking](https://docs.discord.com/developers/activities/development-guides/networking)
-
 ## Check locally
 
 Run `npm --prefix bot test` to test command registration data, account storage,

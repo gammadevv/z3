@@ -18,6 +18,11 @@ async function check(): Promise<UpdateStatus> {
         const response = await CapacitorHttp.get({
             url: LATEST_RELEASE_API, connectTimeout: 15_000, readTimeout: 15_000, responseType: 'json',
         });
+        if (response.status === 404) {
+            apk = undefined;
+            status = { current, phase: 'current' };
+            return status;
+        }
         if (response.status !== 200) throw new Error(`GitHub returned HTTP ${response.status}`);
         const release = newerRelease(response.data, current);
         const asset = release?.assets.find(({ name, state }) => state === 'uploaded' && name === `Zeta-${release.version}-android.apk`);

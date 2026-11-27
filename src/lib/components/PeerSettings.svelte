@@ -183,7 +183,9 @@
             <div class="wayship-status">
                 {#if !wayship.reconnecting}<span class="pulse-dot" aria-hidden="true"></span>{/if}
                 <span aria-live="polite">
-                    {#if wayship.reconnecting}
+                    {#if wayship.authorizationRejected}
+                        Wayship rejected this sign-in. Zeta will retry automatically.
+                    {:else if wayship.reconnecting}
                         Reconnecting to Wayship…
                     {:else}
                         Connected as <strong>{wayship.displayName || wayship.handle}</strong>
@@ -191,7 +193,13 @@
                         · <small class="muted">{wayship.deviceName}</small>
                     {/if}
                 </span>
-                <button class="btn" onclick={() => run(() => wayship.announce())}>Refresh peers</button>
+                {#if wayship.authorizationRejected}
+                    <button class="btn" disabled={wayship.connecting} onclick={() => wayship.signInWithBrowser()}>
+                        {wayship.connecting ? 'Waiting for Wayship…' : 'Reconnect account'}
+                    </button>
+                {:else}
+                    <button class="btn" onclick={() => run(() => wayship.announce())}>Refresh peers</button>
+                {/if}
             </div>
 
             {#if wayship.onlinePeers.length}

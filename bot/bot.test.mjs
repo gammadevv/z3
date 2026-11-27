@@ -277,6 +277,26 @@ test('guild replies respect installation, channel permissions, and privacy', asy
     assert.equal((await run({ perms: [EmbedLinks] })).flags, MessageFlags.Ephemeral);
 });
 
+test('a slash command is acknowledged before it loads account state', async () => {
+    const calls = [];
+    const handle = interactions({ accounts: { get: () => { calls.push('account'); return {}; } } });
+    await handle({
+        isButton: () => false,
+        isModalSubmit: () => false,
+        isChatInputCommand: () => true,
+        inGuild: () => false,
+        user: { id: '101' },
+        commandName: 'wayship',
+        options: { getBoolean: () => null },
+        deferReply: async () => { calls.push('acknowledged'); },
+        editReply: async ({ embeds }) => {
+            assert.equal(embeds[0].toJSON().title, 'Connect to Wayship');
+            calls.push('reply');
+        },
+    });
+    assert.deepEqual(calls, ['acknowledged', 'account', 'reply']);
+});
+
 test('Wayship link modal keeps the credential out of the response and saves it for the submitting account', async () => {
     const token = 'wsa_single_purpose_test';
     const handle = interactions({

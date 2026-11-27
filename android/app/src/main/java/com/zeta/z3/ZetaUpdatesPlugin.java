@@ -30,7 +30,6 @@ import javax.net.ssl.HttpsURLConnection;
 @CapacitorPlugin(name = "ZetaUpdates")
 public class ZetaUpdatesPlugin extends Plugin {
     private static final long MAX_APK_BYTES = 128L * 1024 * 1024;
-    private static final String RELEASES = "https://github.com/zeta-zx/z3/releases/download/";
     private final AtomicBoolean busy = new AtomicBoolean();
 
     @PluginMethod
@@ -68,7 +67,9 @@ public class ZetaUpdatesPlugin extends Plugin {
                 File directory = new File(getContext().getCacheDir(), "updates");
                 if (!directory.isDirectory() && !directory.mkdirs()) throw new IOException("Could not create update cache.");
                 file = File.createTempFile("zeta-", ".apk", directory);
-                download(new URL(RELEASES + "v" + version + "/Zeta-" + version + "-android.apk"), file, size, digest);
+                String repository = getContext().getString(R.string.zeta_release_repo);
+                String release = "https://github.com/" + repository + "/releases/download/v" + version;
+                download(new URL(release + "/Zeta-" + version + "-android.apk"), file, size, digest);
                 verifyPackage(file, version);
                 File ready = new File(directory, "zeta-update.apk");
                 if (!file.renameTo(ready)) throw new IOException("Could not stage the Zeta APK.");

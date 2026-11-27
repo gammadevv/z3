@@ -48,9 +48,7 @@ function transportCommand(name, description) {
 
 export const commands = [
     command('help', 'Show Zeta Discord commands'),
-    command('wayship', 'Connect Wayship or link a Zeta Activity')
-        .addStringOption((option) => option.setName('activity-code').setDescription('Link the current Activity with its displayed code')
-            .setMinLength(8).setMaxLength(8)),
+    command('wayship', 'Connect your Discord account to Wayship'),
     service(command('link', 'Link a scrobbling profile by username'), { required: true })
         .addStringOption((option) => option.setName('username').setDescription('Your public profile username')
             .setMinLength(1).setMaxLength(128).setRequired(true)),
@@ -88,8 +86,7 @@ export async function syncZetaCommands(application) {
         .filter(({ type }) => type === ApplicationCommandType.ChatInput)
         .map((entry) => [entry.name, entry]));
 
-    // Discord manages the Activity's Launch entry point separately. Upsert only
-    // Zeta's slash commands, leaving the entry point and other commands intact.
+    // Upsert Zeta's slash commands without changing unrelated commands.
     const changed = desired.filter((command) => !slashByName.get(command.name)?.equals(command));
     await Promise.all(changed.map((command) => application.commands.create(command)));
     return { total: desired.length, updated: changed.length };

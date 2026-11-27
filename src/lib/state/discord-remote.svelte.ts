@@ -1,11 +1,8 @@
 import { client } from '$lib/ephaptic';
-import { activityCover, boundedActivityLyrics } from '$lib/activity-media';
 import type { Song, Thumbnail } from '$lib/schema';
 import { bestThumbnailUrl, buildLyricLines, slimSong } from '$lib/utils';
 import type { DiscordAlbum, DiscordCommand, DiscordPlayback, DiscordResult, DiscordTrack } from '$lib/wayship-discord';
 import { libraryState } from './library.svelte';
-import { artworkState } from './artwork.svelte';
-import { lyricsState } from './lyrics.svelte';
 import { discordVoice } from './discord-voice.svelte';
 import { peers } from './peers.svelte';
 import {
@@ -52,14 +49,6 @@ async function albumSummary(song: Song): Promise<DiscordAlbum | undefined> {
     };
 }
 
-let activityTrack: { id: string; key: string } | undefined;
-
-function trackKey(track: Song | null) {
-    if (!track) activityTrack = undefined;
-    else if (activityTrack?.id !== track.id) activityTrack = { id: track.id, key: crypto.randomUUID() };
-    return activityTrack?.key;
-}
-
 function playback(): DiscordPlayback {
     const { currentTrack, currentTime, duration, isLoading, paused } = playerState;
     return {
@@ -69,8 +58,6 @@ function playback(): DiscordPlayback {
         voiceAvailable: discordVoice.available,
         position: Number.isFinite(currentTime) ? currentTime : 0,
         duration: Number.isFinite(duration) ? duration : 0,
-        sampledAt: Date.now(),
-        trackKey: trackKey(currentTrack),
         queue: getUpcomingTracks(5).map(trackSummary),
     };
 }
@@ -82,24 +69,6 @@ async function searchTrack(query: string): Promise<Song | undefined> {
 
 export async function runDiscordCommand(command: DiscordCommand, isCurrent: () => boolean): Promise<DiscordResult> {
     if (command.action === 'status') return { ok: true, playback: playback() };
-    if (command.action === 'activity-media') {
-        const track = playerState.currentTrack;
-        if (!track || trackKey(track) !== command.trackKey) return { ok: false, error: 'The current track changed.' };
-        const art = artworkState.artworkFor(track.id);
-        const cover = await activityCover(art.url);
-        if (!isCurrent() || trackKey(playerState.currentTrack) !== command.trackKey) {
-            return { ok: false, error: 'The current track changed.' };
-        }
-        return {
-            ok: true,
-            activityMedia: {
-                trackKey: command.trackKey,
-                cover,
-                lyrics: boundedActivityLyrics(lyricsState.raw),
-                pending: playerState.lyricsPending || art.pending,
-            },
-        };
-    }
     if (command.action === 'lyrics' || command.action === 'album') {
         const song = command.query ? await searchTrack(command.query) : playerState.currentTrack;
         if (!song) return { ok: false, error: 'No track found. Try providing a song title and artist.' };

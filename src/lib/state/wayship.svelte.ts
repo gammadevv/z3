@@ -75,6 +75,7 @@ class WayshipState {
 
     connecting = $state(false);
     reconnecting = $state(false);
+    authorizationRejected = $state(false);
     onlinePeers = $state<WayshipPeer[]>([]);
     iceServers = $state<RTCIceServer[]>([
         { urls: ['stun:stun.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] },
@@ -121,6 +122,7 @@ class WayshipState {
     private async api<T>(session: WayshipSession, path: string, init?: RequestInit): Promise<T> {
         const { signal } = session.controller;
         const res = await fetch(`${WAYSHIP_API}${path}`, {
+            cache: 'no-store',
             ...init,
             signal: AbortSignal.any([signal, AbortSignal.timeout(6000)]),
             headers: {
@@ -178,6 +180,7 @@ class WayshipState {
 
     private startSession() {
         this.stopSession();
+        this.authorizationRejected = false;
         this.reconnecting = true;
         const session: WayshipSession = {
             token: this.token, controller: new AbortController(), signals: new WayshipSignalInbox(),
@@ -290,15 +293,15 @@ class WayshipState {
             session.rejectedProfiles = error instanceof WayshipHttpError && error.status === 401
                 ? session.rejectedProfiles + 1 : 0;
             if (session.rejectedProfiles >= 2) {
-                const message = 'Wayship authorization expired. Connect your account again.';
-                if (this.accountId) toasts.error(message);
-                this.disconnect(false);
-                throw new Error(message);
+                // Keep the saved account so a temporary rejection can recover.
+                // A revoked token can be replaced from Settings.
+                this.authorizationRejected = true;
             }
             throw error;
         });
         session.controller.signal.throwIfAborted();
         session.rejectedProfiles = 0;
+        this.authorizationRejected = false;
         this.accountId = me.account_id;
         this.handle = me.handle;
         this.displayName = me.display_name || me.handle;
@@ -509,6 +512,7 @@ class WayshipState {
         }
         this.token = '';
         this.reconnecting = false;
+        this.authorizationRejected = false;
         this.accountId = '';
         this.handle = '';
         this.displayName = '';

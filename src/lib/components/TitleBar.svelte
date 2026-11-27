@@ -17,7 +17,7 @@
     const linux = typeof document !== "undefined" && document.documentElement.dataset.os === "linux";
     let maximized = $state(false);
     const wayshipLink = $derived(peers.links.find((link) => !!link.wayshipPeerId));
-    const wayshipState = $derived(wayshipLink?.connected ? 'synced' : wayshipLink ? 'connecting' : wayship.connected ? 'online' : 'offline');
+    const wayshipState = $derived(wayshipLink?.connected ? 'synced' : wayshipLink || wayship.reconnecting ? 'connecting' : wayship.connected ? 'online' : 'offline');
     const wayshipStatus = $derived({ synced: 'Synced', connecting: 'Connecting…', online: 'Online', offline: 'Offline' }[wayshipState]);
 
     $effect(() => {

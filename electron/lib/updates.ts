@@ -49,6 +49,10 @@ async function check(): Promise<UpdateStatus> {
     if (!app.isPackaged || status.phase === 'downloading' || status.phase === 'ready') return status;
     try {
         const response = await net.fetch(LATEST_RELEASE_API, { signal: AbortSignal.timeout(15_000) });
+        if (response.status === 404) {
+            status = { current: app.getVersion(), phase: 'current' };
+            return status;
+        }
         if (!response.ok) throw new Error(`GitHub returned HTTP ${response.status}`);
         const release = newerRelease(await response.json(), app.getVersion());
         status = release

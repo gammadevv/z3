@@ -16,7 +16,6 @@ export type DiscordCommand =
     | { action: 'play' | 'playnext' | 'enqueue'; query: string }
     | { action: 'lyrics' | 'album'; query?: string }
     | ({ action: 'voice-start' } & DiscordVoiceStream)
-    | { action: 'activity-media'; trackKey: string }
     | { action: 'seek' | 'volume'; value: number };
 
 export type DiscordRequest = DiscordCommand & {
@@ -53,21 +52,11 @@ export interface DiscordPlayback {
     position: number;
     duration: number;
     queue: DiscordTrack[];
-    sampledAt?: number;
-    trackKey?: string;
-}
-
-export interface DiscordActivityMedia {
-    trackKey: string;
-    lyrics: string | null;
-    cover: string | null;
-    pending: boolean;
 }
 
 export type DiscordResult =
     | { ok: false; error: string }
-    | { ok: true; playback?: DiscordPlayback; track?: DiscordTrack; album?: DiscordAlbum; lyrics?: string;
-        activityMedia?: DiscordActivityMedia };
+    | { ok: true; playback?: DiscordPlayback; track?: DiscordTrack; album?: DiscordAlbum; lyrics?: string };
 
 const UUID_PATTERN = /^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i;
 
@@ -85,8 +74,6 @@ export function readDiscordRequest(input: unknown, now = Date.now()): DiscordReq
         case 'lyrics': case 'album':
             if (request.query === undefined) return request;
             return validQuery(request.query) ? request : null;
-        case 'activity-media':
-            return typeof request.trackKey === 'string' && UUID_PATTERN.test(request.trackKey) ? request : null;
         case 'voice-start':
             return typeof request.relayId === 'string' && /^[\da-f]{32}$/.test(request.relayId) &&
                 typeof request.key === 'string' && /^[\da-f]{64}$/.test(request.key) &&
