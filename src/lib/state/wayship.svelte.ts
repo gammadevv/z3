@@ -2,9 +2,8 @@ import { browser } from '$app/environment';
 import { CapacitorHttp } from '@capacitor/core';
 import { client } from '$lib/ephaptic';
 import { isAndroid } from '$lib/platform';
-import type { PeerMode } from '$lib/peer-connection';
 import { DISCORD_PEER_PREFIX, DISCORD_PROTOCOL, DiscordRequests } from '$lib/wayship-discord';
-import { nextWayshipRetry, WayshipHttpError, WayshipSignalInbox } from '$lib/wayship-recovery';
+import { canAutoSyncWayshipPeer, nextWayshipRetry, WayshipHttpError, WayshipSignalInbox, type WayshipLinkMode } from '$lib/wayship-recovery';
 import { runDiscordCommand } from './discord-remote.svelte';
 import { discordVoice } from './discord-voice.svelte';
 import { peers } from './peers.svelte';
@@ -339,7 +338,7 @@ class WayshipState {
             body: JSON.stringify({
                 peer_id: this.peerId,
                 device_name: this.deviceName,
-                meta: { platform: isAndroid ? 'android' : 'desktop', backupPreview: true },
+                meta: { platform: isAndroid ? 'android' : 'desktop', backupPreview: true, librarySync: true },
             }),
         });
         session.controller.signal.throwIfAborted();
@@ -347,25 +346,17 @@ class WayshipState {
         this.log('announce', { self: this.peerId, peers: this.onlinePeers.map((peer) => ({ id: peer.peer_id, name: peer.device_name })) });
         if (out.ice_servers?.length) this.iceServers = out.ice_servers;
 
-        this.autoConnect(session);
+        this.syncOnlineDevices(session);
     }
 
-    /**
-     * Link up with every Zeta device that is online on this Wayship account,
-     * so opening the app on a second device connects without any clicks.
-     * Only the device with the smaller peer id sends the offer. That matches
-     * the tie-breaker in peers.handleWayshipSignal, so two apps opening at the
-     * same time never send competing offers. Runs on every announce (~28s),
-     * which also retries links that timed out or dropped.
-     */
-    private autoConnect(session: WayshipSession) {
+    private syncOnlineDevices(session: WayshipSession) {
         if (session.controller.signal.aborted) return;
         for (const peer of this.onlinePeers) {
-            if (this.peerId >= peer.peer_id) continue;
+            if (!canAutoSyncWayshipPeer(this.peerId, peer)) continue;
             if (peers.links.some((link) => link.wayshipPeerId === peer.peer_id)) continue;
-            this.log('auto-connect', { local: this.peerId, remote: peer.peer_id });
-            void this.connectPeer(peer.peer_id, 'remote').catch((error) => {
-                this.log('auto-connect failed', { remote: peer.peer_id, error: String(error) });
+            this.log('auto-sync', { local: this.peerId, remote: peer.peer_id });
+            void this.connectPeer(peer.peer_id, 'sync').catch((error) => {
+                this.log('auto-sync failed', { remote: peer.peer_id, error: String(error) });
             });
         }
     }
@@ -415,10 +406,8 @@ class WayshipState {
                         updated_at: ev.ts || Date.now(),
                     },
                 ];
-                // A device that just opened Zeta links up right away instead of
-                // waiting up to ~28s for the next announce.
             }
-            this.autoConnect(session);
+            this.syncOnlineDevices(session);
             return;
         }
 
@@ -482,7 +471,7 @@ class WayshipState {
         }
     }
 
-    async connectPeer(remotePeerId: string, mode: PeerMode, includeAudio = true) {
+    async connectPeer(remotePeerId: string, mode: WayshipLinkMode, includeAudio = true) {
         const session = this.session;
         if (!session || session.controller.signal.aborted) throw new Error('Wayship is disconnected.');
         this.log('connect requested', { local: this.peerId, remote: remotePeerId, mode });
@@ -494,7 +483,6 @@ class WayshipState {
             this.iceServers,
             (toPeer, kind, payload) => this.sendSignal(toPeer, kind, payload, session),
             mode === 'backup' ? includeAudio : undefined,
-            this.peerId,
         );
     }
 

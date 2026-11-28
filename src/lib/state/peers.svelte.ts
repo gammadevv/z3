@@ -9,13 +9,14 @@ import { settingsState } from './settings.svelte';
 import { ui } from './ui.svelte';
 import { toasts } from './toast.svelte';
 import { BACKUP_AUDIO_LIMIT_MESSAGE, MAX_BACKUP_BYTES } from '$lib/zeta-backup';
+import { acceptsWayshipOffer, carriesPeerPlayback, readWayshipOfferMode, type WayshipLinkMode } from '$lib/wayship-recovery';
 import type { Song } from '$lib/schema';
 
 type Command = 'toggle' | 'next' | 'previous' | 'seek' | 'volume';
 type RemotePlayback = { song: Song | null; paused: boolean; position: number; duration: number; volume: number; queue: string[] };
 type Link = {
     id: string;
-    mode: PeerMode;
+    mode: WayshipLinkMode;
     peer: RTCPeerConnection;
     channel?: RTCDataChannel;
     host: boolean;
@@ -117,7 +118,7 @@ class Peers {
     private startBroadcast() {
         if (this.timer) return;
         this.timer = setInterval(() => {
-            const hosts = this.links.filter((link) => link.host && link.connected && link.mode !== 'backup');
+            const hosts = this.links.filter((link) => link.host && link.connected && carriesPeerPlayback(link.mode));
             if (!hosts.length) return;
             for (const link of hosts) this.sendPlayback(link);
         }, 1200);
@@ -170,7 +171,7 @@ class Peers {
                 // The host sends first. The joining device replies after it
                 // has imported that transfer, avoiding two binary streams
                 // colliding on the same ordered data channel.
-                if (link.host) void this.syncLibrary(link.id, true).catch(() => {});
+                if (link.host) void this.syncLibrary(link.id, link.mode !== 'sync').catch(() => {});
             }
         };
         channel.onclose = () => { this.log('data channel closed', { id: link.id }); this.disconnect(link.id); };
@@ -293,20 +294,15 @@ class Peers {
     async connectWayshipPeer(
         remotePeerId: string,
         deviceName: string,
-        mode: PeerMode,
+        mode: WayshipLinkMode,
         iceServers: RTCIceServer[],
         sendSignal: (toPeer: string, kind: 'offer' | 'answer' | 'ice' | 'data', payload: unknown) => Promise<void>,
         backupAudio?: boolean,
-        localPeerId?: string,
     ) {
         const existing = this.links.find((l) => l.wayshipPeerId === remotePeerId);
         if (existing) {
-            if (existing.connected) {
-                if (mode === 'backup') return this.sendBackup(existing.id, backupAudio);
-                existing.mode = mode;
-                void this.syncLibrary(existing.id, true);
-                return;
-            }
+            if (existing.connected && mode === 'backup') return this.sendBackup(existing.id, backupAudio);
+            if (mode === 'sync' || (existing.connected && existing.mode === mode)) return;
             this.disconnect(existing.id);
         }
         const id = `wayship:${remotePeerId}`;
@@ -320,7 +316,7 @@ class Peers {
         link.connectTimeout = setTimeout(() => {
             if (!link.connected && this.links.some((item) => item.peer === peer)) {
                 this.disconnect(id);
-                toasts.error('Wayship could not establish a direct device connection. Try Connect again.');
+                if (mode !== 'sync') toasts.error('Wayship could not establish a direct device connection. Try again.');
             }
         }, 20_000);
         this.startBroadcast();
@@ -339,7 +335,9 @@ class Peers {
         const offer = await peer.createOffer();
         await peer.setLocalDescription(offer);
         await this.waitForIceGathering(peer);
-        await sendSignal(remotePeerId, 'offer', { sdp: peer.localDescription?.sdp, mode });
+        if (this.links.some((item) => item.peer === peer)) {
+            await sendSignal(remotePeerId, 'offer', { sdp: peer.localDescription?.sdp, mode, userInitiated: mode !== 'sync' });
+        }
     }
 
     async handleWayshipSignal(
@@ -354,15 +352,10 @@ class Peers {
         const id = `wayship:${remotePeerId}`;
         if (kind !== 'ice') this.log('signal handling', { id, kind, hasPayload: !!payload });
         if (kind === 'offer' && payload && typeof payload.sdp === 'string') {
+            const mode = readWayshipOfferMode(payload);
+            if (!mode) return;
             const existing = this.links.find((l) => l.id === id);
-            const mode: PeerMode = ['backup', 'remote', 'party'].includes(payload.mode) ? payload.mode : 'remote';
-            // If both devices were clicked at once, keep one deterministic
-            // offer. An explicit backup takes priority over auto-connection.
-            if (existing?.host) {
-                if (existing.mode === 'backup' && mode !== 'backup') return;
-                const preferredBackup = mode === 'backup' && existing.mode !== 'backup';
-                if (!preferredBackup && localPeerId && localPeerId < remotePeerId) return;
-            }
+            if (existing && !acceptsWayshipOffer(mode, existing, localPeerId, remotePeerId)) return;
             if (existing) this.disconnect(id);
             const peer = new RTCPeerConnection({ iceServers });
             this.log('peer created for offer', { id, remotePeerId, iceServers: iceServers.map((server) => server.urls) });
@@ -372,7 +365,7 @@ class Peers {
             link.connectTimeout = setTimeout(() => {
                 if (!link.connected && this.links.some((item) => item.peer === peer)) {
                     this.disconnect(id);
-                    toasts.error('Wayship could not establish a direct device connection. Try Connect again.');
+                    if (mode !== 'sync') toasts.error('Wayship could not establish a direct device connection. Try again.');
                 }
             }, 20_000);
 
@@ -393,7 +386,9 @@ class Peers {
             const answer = await peer.createAnswer();
             await peer.setLocalDescription(answer);
             await this.waitForIceGathering(peer);
-            await sendSignal(remotePeerId, 'answer', { sdp: peer.localDescription?.sdp, mode });
+            if (this.links.some((item) => item.peer === peer)) {
+                await sendSignal(remotePeerId, 'answer', { sdp: peer.localDescription?.sdp, mode });
+            }
             return;
         }
         const link = this.links.find((l) => l.id === id);
@@ -405,7 +400,7 @@ class Peers {
             }
             return;
         }
-        if (kind === 'answer' && payload && typeof payload.sdp === 'string') {
+        if (kind === 'answer' && payload?.mode === link.mode && typeof payload.sdp === 'string') {
             if (link.peer.signalingState === 'have-local-offer') {
                 await link.peer.setRemoteDescription({ type: 'answer', sdp: payload.sdp });
                 await this.flushIce(id, link.peer);
@@ -434,7 +429,7 @@ class Peers {
         this.pendingIce.delete(id);
         if (link.connectTimeout) clearTimeout(link.connectTimeout);
         if (this.pending?.id === id) this.pending = null;
-        if (!link.host) { this.remote = null; this.following = false; }
+        if (!link.host && carriesPeerPlayback(link.mode)) { this.remote = null; this.following = false; }
         if (this.incoming?.id === id) { this.incoming = null; this.progress = null; }
         if (!this.links.length) { clearInterval(this.timer); this.timer = undefined; }
         if (!this.links.length) { clearInterval(this.librarySyncTimer); this.librarySyncTimer = undefined; }
@@ -494,7 +489,7 @@ class Peers {
     }
 
     command(command: Command, value?: number) {
-        const link = this.links.find((item) => !item.host && item.connected && item.mode !== 'backup');
+        const link = this.links.find((item) => !item.host && item.connected && carriesPeerPlayback(item.mode));
         if (link) this.send(link, { type: 'command', command, value });
     }
 
@@ -567,7 +562,7 @@ class Peers {
             }
             return;
         }
-        if (link.mode === 'backup') return;
+        if (!carriesPeerPlayback(link.mode)) return;
         if (link.host) {
             if (message.type === 'takeover') {
                 playerState.paused = true;

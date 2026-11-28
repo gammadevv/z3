@@ -172,7 +172,7 @@
             {#if expanded}
                 <button class="icon-btn" title="Previous" onclick={previousTrack}><Icon name="skip-back" /></button>
             {/if}
-            <button class="play" title={remote ? `Play/Pause on ${peers.links.find((link) => !link.host && link.connected)?.deviceName || "other device"}` : "Play/Pause (Space)"} disabled={loading} onclick={togglePlay}>
+            <button class="play" title={remote ? `Play/Pause on ${peers.links.find((link) => !link.host && link.connected && link.mode === "remote")?.deviceName || "other device"}` : "Play/Pause (Space)"} disabled={loading} onclick={togglePlay}>
                 {#if loading}
                     <span class="spin"><Icon name="loader-circle" /></span>
                 {:else}

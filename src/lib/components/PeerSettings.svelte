@@ -21,7 +21,7 @@
     let query = $state('');
     let results = $state<Song[]>([]);
     let diagnosticsCopied = $state(false);
-    const guest = $derived(peers.links.find((link) => !link.host && link.connected && link.mode !== 'backup'));
+    const guest = $derived(peers.links.find((link) => !link.host && link.connected && (link.mode === 'remote' || link.mode === 'party')));
 
     $effect(() => {
         const pairing = peers.pending?.code;
@@ -167,7 +167,7 @@
                 <span class="wayship-eyebrow">Wayship P2P Cloud Mesh</span>
                 <h2>Connect with Wayship</h2>
                 <p class="muted">
-                    Sign in on your desktop and phone to automatically discover your devices and sync listening stats, playlists, and favourites anywhere—even across different networks.
+                    Sign in on both devices to sync listening stats, playlists, and favourites. Start remote control from the device you want to keep playing.
                 </p>
             </div>
             {#if wayship.connected}
@@ -207,16 +207,24 @@
                     {#each wayship.onlinePeers as wp (wp.peer_id)}
                         {@const linked = peers.links.find((l) => l.wayshipPeerId === wp.peer_id)}
                         {@const connected = linked?.connected === true}
+                        {@const remote = linked?.mode === 'remote'}
                         <div class="wayship-peer" role="listitem">
                             <div class="wayship-peer-info">
                                 <span class="pulse-dot" aria-hidden="true"></span>
                                 <strong>{wp.device_name || 'Zeta device'}</strong>
-                                <small class="muted">{connected ? 'Connected · synced' : linked ? 'Connecting…' : 'Online on Wayship'}</small>
+                                <small class="muted">
+                                    {#if remote}{connected ? 'Remote control active' : 'Connecting remote control…'}
+                                    {:else if linked?.mode === 'sync'}{connected ? 'Library sync' : 'Connecting library sync…'}
+                                    {:else}{connected ? 'Connected' : linked ? 'Connecting…' : 'Online on Wayship'}{/if}
+                                </small>
                             </div>
                             <div class="buttons">
-                                <button class="btn" class:btn-primary={!linked} disabled={!!linked} onclick={() => run(() => wayship.connectPeer(wp.peer_id, 'remote'))}>
-                                    {connected ? 'Connected' : linked ? 'Connecting…' : 'Connect'}
-                                </button>
+                                {#if remote}
+                                    <button class="btn" onclick={() => peers.disconnect(linked.id)}>Stop remote control</button>
+                                {:else}
+                                    <button class="btn" class:btn-primary={!linked} disabled={!!linked && linked.mode !== 'sync'}
+                                        onclick={() => run(() => wayship.connectPeer(wp.peer_id, 'remote'))}>Remote control</button>
+                                {/if}
                                 <button class="btn" aria-label={`Send backup to ${wp.device_name || 'Zeta device'}`}
                                     disabled={(!!linked && !connected) || peers.progress !== null}
                                     onclick={() => run(() => wayship.sendBackup(wp.peer_id, includeAudio))}>Send backup</button>
@@ -315,7 +323,7 @@
     {#if peers.progress !== null}<progress aria-label="Backup transfer" value={peers.progress} max="1"></progress>{/if}
     {#each peers.links.filter((link) => link.connected) as link (link.id)}
         <div class="buttons">
-            <span>{link.mode === 'party' ? 'Listening party' : link.mode === 'backup' ? 'Backup transfer' : 'Remote control'}{link.deviceName ? ` · ${link.deviceName}` : ''}</span>
+            <span>{link.mode === 'party' ? 'Listening party' : link.mode === 'backup' ? 'Backup transfer' : link.mode === 'sync' ? 'Library sync' : 'Remote control'}{link.deviceName ? ` · ${link.deviceName}` : ''}</span>
             {#if link.mode === 'backup' && link.host}
                 <button class="btn" disabled={peers.progress !== null} onclick={() => run(() => peers.sendBackup(link.id))}>Send backup again</button>
             {:else}
