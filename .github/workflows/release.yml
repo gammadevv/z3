@@ -188,6 +188,6 @@ jobs:
           set -euo pipefail
           gh release view "$RELEASE_TAG" --json assets > "$RUNNER_TEMP/zeta-release-assets.json"
           node scripts/verify-release.mjs "$RUNNER_TEMP/zeta-release-assets.json"
-          if [ "$GITHUB_REPOSITORY" = 'zeta-zx/z3' ]; then
+          if [ "$GITHUB_REPOSITORY" = 'gammadevv/z3' ]; then
             gh release edit "$RELEASE_TAG" --draft=false --latest
           fi

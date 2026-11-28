@@ -1,7 +1,7 @@
 apply plugin: 'com.android.application'
 
 def releaseKeystore = System.getenv('ANDROID_KEYSTORE_PATH')
-def releaseRepo = providers.environmentVariable('VITE_ZETA_RELEASE_REPO').orElse('zeta-zx/z3').get()
+def releaseRepo = providers.environmentVariable('VITE_ZETA_RELEASE_REPO').orElse('gammadevv/z3').get()
 if (!(releaseRepo ==~ /[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+/)) {
     throw new GradleException('Invalid GitHub release repository.')
 }
@@ -14,8 +14,8 @@ android {
         manifestPlaceholders.zetaAppLabel = "@string/app_name"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 15
-        versionName "0.6.3"
+        versionCode 16
+        versionName "0.6.4"
         resValue "string", "zeta_release_repo", releaseRepo
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {

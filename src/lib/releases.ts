@@ -1,4 +1,4 @@
-const releaseRepo = import.meta.env?.VITE_ZETA_RELEASE_REPO || 'zeta-zx/z3';
+const releaseRepo = import.meta.env?.VITE_ZETA_RELEASE_REPO || 'gammadevv/z3';
 export const RELEASES_URL = `https://github.com/${releaseRepo}/releases`;
 export const LATEST_RELEASE_API = `https://api.github.com/repos/${releaseRepo}/releases/latest`;
 
