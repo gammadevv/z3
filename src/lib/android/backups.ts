@@ -1,5 +1,5 @@
 import { Capacitor, registerPlugin } from '@capacitor/core';
-import { Directory, Filesystem } from '@capacitor/filesystem';
+import { Directory, Encoding, Filesystem } from '@capacitor/filesystem';
 import type { Song, Thumbnail } from '../schema';
 import { buildMuzzaArchive, parseMuzzaArchive } from '../muzza-codec';
 import {
@@ -14,6 +14,57 @@ const picker = registerPlugin<{
 }>('ZetaBackups');
 
 const CHUNK_BYTES = 1024 * 1024;
+const CHECKPOINT_PATH = `${MUSIC_PATH}/last-zeta-import.json`;
+
+interface Checkpoint {
+    time: number;
+    before: MobileLibrary;
+    after: string;
+}
+
+async function libraryDigest(library: MobileLibrary) {
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(library)));
+    return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function readImportCheckpoint(): Promise<Checkpoint | null> {
+    try {
+        const { data } = await Filesystem.readFile({ directory: Directory.Data, path: CHECKPOINT_PATH, encoding: Encoding.UTF8 });
+        const checkpoint = JSON.parse(data as string) as Checkpoint;
+        if (!Number.isFinite(checkpoint.time) || checkpoint.before?.version !== 1 || typeof checkpoint.after !== 'string') {
+            throw new Error('The import checkpoint is invalid.');
+        }
+        return checkpoint;
+    } catch (error) {
+        if ((error as { code?: string }).code === 'OS-PLUG-FILE-0008') return null;
+        throw error;
+    }
+}
+
+async function hasUndo(): Promise<number | null> {
+    return (await readImportCheckpoint())?.time ?? null;
+}
+
+async function undoImport(): Promise<boolean> {
+    const audio = await storage.edit(async (current) => {
+        const checkpoint = await readImportCheckpoint();
+        if (!checkpoint) return null;
+        if (await libraryDigest(current) !== checkpoint.after) {
+            throw new Error('The library changed after the import. Undo would overwrite those changes.');
+        }
+        const previousFiles = new Set(Object.values(checkpoint.before.songs).map(({ file }) => file));
+        const copied = Object.values(current.songs).flatMap(({ file }) =>
+            file && !previousFiles.has(file) && /^zeta\/audio\/[\da-f-]{36}\.[a-z0-9]+$/i.test(file) ? [file] : []);
+        delete current.muzzaBase;
+        Object.assign(current, checkpoint.before);
+        return copied;
+    }, async (copied) => {
+        if (!copied) return;
+        await Promise.allSettled([CHECKPOINT_PATH, ...copied.flatMap((file) => [file, file.replace(/\.[^.]+$/, '.cover')])].map((path) =>
+            Filesystem.deleteFile({ directory: Directory.Data, path })));
+    });
+    return audio !== null;
+}
 
 async function readBytes(directory: Directory, path: string): Promise<Uint8Array> {
     const { size } = await Filesystem.stat({ directory, path });
@@ -200,7 +251,8 @@ async function zetaImportBytes(bytes: Uint8Array) {
             const stableId = await backupPlaylistId(list.id);
             return { ...list, id: playlistIds.get(stableId) ?? stableId };
         }));
-        const used = await storage.edit((state) => {
+        const used = await storage.edit(async (state) => {
+            const before = structuredClone(state);
             const written: string[] = [];
             for (const entry of entries.values()) {
                 const existing = state.songs[entry.song.id];
@@ -211,6 +263,13 @@ async function zetaImportBytes(bytes: Uint8Array) {
             mergeLists(state, manifest.favourites, playlists);
             state.events.push(...mergeBackupEvents(state.events, manifest.events));
             state.names = { ...manifest.names, ...state.names };
+            const after = await libraryDigest(state);
+            if (after !== await libraryDigest(before)) {
+                const checkpoint: Checkpoint = { time: Date.now(), before, after };
+                const temp = `${CHECKPOINT_PATH}.tmp`;
+                await Filesystem.writeFile({ directory: Directory.Data, path: temp, data: JSON.stringify(checkpoint), encoding: Encoding.UTF8 });
+                await Filesystem.rename({ directory: Directory.Data, from: temp, to: CHECKPOINT_PATH });
+            }
             return written;
         });
         for (const id of used) {
@@ -277,4 +336,7 @@ async function muzzaImport() {
     return { songs: imported.songs.length, playlists: imported.playlists.length, liked: imported.likedIds.length };
 }
 
-export const backupRoutes = { zetaExport, zetaImport, zetaBackupBytes, zetaImportBytes, zetaPickBackup: pickedBackup, muzzaExport, muzzaImport };
+export const backupRoutes = {
+    zetaExport, zetaImport, zetaBackupBytes, zetaImportBytes, zetaPickBackup: pickedBackup,
+    zetaUndoImportTime: hasUndo, zetaUndoImport: undoImport, muzzaExport, muzzaImport,
+};

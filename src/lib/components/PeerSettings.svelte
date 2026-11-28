@@ -213,9 +213,14 @@
                                 <strong>{wp.device_name || 'Zeta device'}</strong>
                                 <small class="muted">{connected ? 'Connected · synced' : linked ? 'Connecting…' : 'Online on Wayship'}</small>
                             </div>
-                            <button class="btn" class:btn-primary={!linked} disabled={connected || !!linked} onclick={() => run(() => wayship.connectPeer(wp.peer_id, 'remote'))}>
-                                {connected ? 'Connected' : linked ? 'Connecting…' : 'Connect'}
-                            </button>
+                            <div class="buttons">
+                                <button class="btn" class:btn-primary={!linked} disabled={!!linked} onclick={() => run(() => wayship.connectPeer(wp.peer_id, 'remote'))}>
+                                    {connected ? 'Connected' : linked ? 'Connecting…' : 'Connect'}
+                                </button>
+                                <button class="btn" aria-label={`Send backup to ${wp.device_name || 'Zeta device'}`}
+                                    disabled={(!!linked && !connected) || peers.progress !== null}
+                                    onclick={() => run(() => wayship.sendBackup(wp.peer_id, includeAudio))}>Send backup</button>
+                            </div>
                         </div>
                     {/each}
                 </div>

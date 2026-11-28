@@ -1,4 +1,5 @@
 import { browser } from '$app/environment';
+import { CapacitorHttp } from '@capacitor/core';
 import { client } from '$lib/ephaptic';
 import { isAndroid } from '$lib/platform';
 import type { PeerMode } from '$lib/peer-connection';
@@ -101,6 +102,9 @@ class WayshipState {
         document.addEventListener('visibilitychange', () => {
             if (document.visibilityState === 'visible') this.wake();
         });
+        if (isAndroid) void import('@capacitor/app').then(({ App }) => App.addListener('appStateChange', ({ isActive }) => {
+            if (isActive) this.wake();
+        })).catch(() => {});
         if (this.connected) void this.startSession().catch(() => {});
     }
 
@@ -121,17 +125,31 @@ class WayshipState {
 
     private async api<T>(session: WayshipSession, path: string, init?: RequestInit): Promise<T> {
         const { signal } = session.controller;
-        const res = await fetch(`${WAYSHIP_API}${path}`, {
-            cache: 'no-store',
-            ...init,
-            signal: AbortSignal.any([signal, AbortSignal.timeout(6000)]),
-            headers: {
-                'Authorization': `Bearer ${session.token}`,
-                'Content-Type': 'application/json',
-            },
-        });
+        const url = `${WAYSHIP_API}${path}`;
+        const headers = { Authorization: `Bearer ${session.token}`, 'Content-Type': 'application/json' };
+        let status: number;
+        let data: T & { detail?: string; message?: string };
+        if (isAndroid) {
+            const response = await CapacitorHttp.request({
+                url, headers, method: init?.method ?? 'GET',
+                data: typeof init?.body === 'string' ? JSON.parse(init.body) : undefined,
+                connectTimeout: 6000, readTimeout: 6000, responseType: 'json', disableRedirects: true,
+            });
+            status = response.status;
+            data = response.data;
+        } else {
+            const response = await fetch(url, {
+                cache: 'no-store', ...init, headers,
+                signal: AbortSignal.any([signal, AbortSignal.timeout(6000)]),
+            });
+            status = response.status;
+            data = await response.json().catch((error) => {
+                if (response.ok) throw error;
+                return null;
+            });
+        }
         signal.throwIfAborted();
-        if (res.status === 401) {
+        if (status === 401) {
             // An expired peer or stale signaling request should not erase a
             // saved account. Revalidate the token at the account endpoint.
             if (path !== '/apps/me' && session.authenticated) {
@@ -141,12 +159,9 @@ class WayshipState {
             }
             throw new WayshipHttpError(401, 'Wayship could not authorize this request.');
         }
-        if (!res.ok) {
-            const err = await res.json().catch(() => ({}));
-            throw new WayshipHttpError(res.status, err?.detail || err?.message || `Wayship returned HTTP ${res.status}`);
+        if (status < 200 || status >= 300) {
+            throw new WayshipHttpError(status, data?.detail || data?.message || `Wayship returned HTTP ${status}`);
         }
-        const data = await res.json();
-        signal.throwIfAborted();
         return data;
     }
 
@@ -199,7 +214,7 @@ class WayshipState {
     }
 
     private async maintain(session: WayshipSession) {
-        if (session.controller.signal.aborted || !navigator.onLine) return;
+        if (session.controller.signal.aborted || (!isAndroid && !navigator.onLine)) return;
         if (Date.now() >= session.announceAt) {
             await this.announce(session).catch(() => {});
         }
@@ -324,7 +339,7 @@ class WayshipState {
             body: JSON.stringify({
                 peer_id: this.peerId,
                 device_name: this.deviceName,
-                meta: { platform: isAndroid ? 'android' : 'desktop' },
+                meta: { platform: isAndroid ? 'android' : 'desktop', backupPreview: true },
             }),
         });
         session.controller.signal.throwIfAborted();
@@ -388,6 +403,7 @@ class WayshipState {
             if (existing) {
                 if (ev.ts && ev.ts < existing.updated_at) return;
                 existing.device_name = ev.device_name || existing.device_name;
+                existing.meta = ev.meta ?? existing.meta;
                 existing.updated_at = ev.ts || Date.now();
             } else {
                 this.onlinePeers = [
@@ -480,6 +496,18 @@ class WayshipState {
             mode === 'backup' ? includeAudio : undefined,
             this.peerId,
         );
+    }
+
+    async sendBackup(remotePeerId: string, includeAudio: boolean) {
+        const device = this.onlinePeers.find((peer) => peer.peer_id === remotePeerId);
+        if (!device) throw new Error('Open Zeta on the receiving device and connect it to Wayship.');
+        const link = peers.links.find((item) => item.wayshipPeerId === remotePeerId);
+        if (!link) return this.connectPeer(remotePeerId, 'backup', includeAudio);
+        if (!link.connected) throw new Error('Wait for Wayship to finish connecting.');
+        if (link.mode !== 'backup' && device.meta?.backupPreview !== true) {
+            throw new Error('Update Zeta on the receiving device to send a backup over this Wayship connection.');
+        }
+        return peers.sendBackup(link.id, includeAudio);
     }
 
     private stopSession() {

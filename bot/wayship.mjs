@@ -6,7 +6,7 @@ import {
 
 const API = 'https://wayship.link/api';
 const PEER_ID = /^[A-Za-z0-9._:-]{4,64}$/;
-const DISCOVERY_TIMEOUT = 4000;
+const DISCOVERY_TIMEOUT = 6500;
 
 export class BotError extends Error {}
 
@@ -57,6 +57,7 @@ export function wayshipClient(fetcher = fetch) {
             .map((peer) => ({
                 id: peer.peer_id,
                 name: (typeof peer.device_name === 'string' ? peer.device_name.trim().slice(0, 60) : '') || 'Zeta device',
+                platform: peer.meta?.platform === 'android' ? 'android' : 'desktop',
             }))
             .sort((a, b) => a.id.localeCompare(b.id));
 
@@ -122,6 +123,9 @@ export function wayshipClient(fetcher = fetch) {
             const replies = await request(candidates, { action: 'status' }, DISCOVERY_TIMEOUT);
             const available = replies.filter(({ result }) => result.ok && result.playback);
             if (!available.length) {
+                if (candidates.some(({ platform }) => platform === 'android')) {
+                    throw new BotError('The Android player is listed but did not reply. Bring Zeta to the foreground, check Wayship in Settings, and try again.');
+                }
                 throw new BotError('No player replied. Open Zeta with Discord bot support and try again.');
             }
 
@@ -154,7 +158,7 @@ function rank(playback) {
     return (phases[playback.phase] ?? 0) * 2 + Number(!!playback.controllable);
 }
 
-function matchDevices(online, name) {
+export function matchDevices(online, name) {
     const query = name.trim().toLowerCase();
     const exactId = online.find(({ id }) => id.toLowerCase() === query);
     if (exactId) return [exactId];

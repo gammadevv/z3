@@ -55,10 +55,13 @@ export const commands = [
     service(command('unlink', 'Remove a saved connection'), { required: true, wayship: true }),
     command('profile', 'See your linked music accounts'),
     share(device(service(command('playing', 'Show what you are listening to')))),
+    share(device(service(command('nowplaying', 'Share a now-playing card with cover art and progress')))),
     share(service(command('recent', 'Show your five most recent listens'))),
     ...['tracks', 'artists'].map((kind) => share(service(command(`top${kind}`, `Show your most-listened-to ${kind}`))
         .addStringOption((option) => option.setName('period').setDescription('Time period').addChoices(...periodChoices)))),
     command('devices', 'List online Zeta devices on your Wayship account'),
+    device(command('defaultdevice', 'Show or set your default Zeta player'))
+        .addBooleanOption((option) => option.setName('clear').setDescription('Remove your saved default device')),
     share(device(query(command('album', 'Show album art and release details for a track'), false))),
     device(voiceCommand('join', 'Play your desktop Zeta audio in your voice channel')),
     voiceCommand('leave', 'Stop sharing Zeta audio and leave the voice channel'),

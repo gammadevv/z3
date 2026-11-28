@@ -1,3 +1,4 @@
+import { isPublicTrackId } from '../../src/lib/track-links';
 import { matchesListeningFilter, type ListeningFilter } from '../../src/lib/listening-history';
 import { Innertube, Parser, Platform, type Types } from 'youtubei.js';
 import { Song as Saavn } from '@saavn-labs/sdk';
@@ -38,23 +39,26 @@ import {
     audioExtension, backupCounts, backupImage, backupPlaylistId, makeZetaBackup, BACKUP_AUDIO_LIMIT_MESSAGE, MAX_BACKUP_BYTES, openZetaBackup, type BackupManifest,
 } from '../../src/lib/zeta-backup';
 import { StatsStore } from '../lib/stats';
+import { captureImportFiles, importCheckpointTime, saveImportCheckpoint, undoImportCheckpoint } from '../lib/import-checkpoint';
 import { comparableText, lyricsfileToLrc } from '../lib/lyricsfile';
 import { routes as scrobbling } from '../lib/scrobbling';
 import { musicText, youtubeArtistNames, youtubeArtists } from '../../src/lib/music-metadata';
 import { parseExportifyCsv } from '../../src/lib/playlist-import';
+import { fetchYoutubePlaylist } from '../../src/lib/youtube-playlist-import';
 import { chooseAudioFormat, isAudioQuality, MAX_BITRATE_KBPS, type AudioQuality } from '../../src/lib/audio-quality';
 import {
     fetchArtistAllSongs,
     fetchArtistDetails,
     fetchCollectionDetails,
+    fetchSongRadio,
     saavnToSong,
     searchMusicAlbums,
     searchMusicExtras,
     searchMusicPlaylists,
     searchMusicSongs,
     searchMusicVideos,
-    ytSearchItems,
     ytToSong,
+    fetchTrackById,
 } from '../../src/lib/music-catalog';
 
 const DEBUG = !!process.env.ZETA_DEBUG;
@@ -1105,6 +1109,17 @@ export const routes = {
             .filter((t: unknown): t is string => typeof t === 'string' && !!t);
     },
 
+    async musicTrack(id: string): Promise<Song> {
+        if (!isPublicTrackId(id)) throw new Error('Invalid Zeta track link.');
+        await ensureStorage();
+        const record = await metadata.get(id);
+        if (record) return MetadataStore.toSong(record);
+        return fetchTrackById(id, async (videoId) => {
+            await init();
+            return yt.getBasicInfo(videoId, { client: 'YTMUSIC' });
+        });
+    },
+
     async musicSearch(query: string, provider: MusicProvider): Promise<Song[]> {
         await ensureStorage();
         const downloaded = new Set((await metadata.all()).filter((r) => r.file).map((r) => r.id));
@@ -1335,6 +1350,26 @@ export const routes = {
         return readPlaylistFile(filename);
     },
 
+    async musicPlaylistSave(name: string, tracks: Song[]): Promise<Playlist> {
+        await ensureStorage();
+        const items = [...new Map(tracks.map((track) => [track.id, track])).values()];
+        if (!items.length || items.some(({ id }) => !/^(yt|js|local|fs):[^\r\n\0]+$/.test(id))) {
+            throw new Error('Choose tracks to save to the playlist.');
+        }
+        const records: IndexRecord[] = [];
+        for (const { isDownloaded: _downloaded, recommendation: _reason, ...track } of items) {
+            if (!(await metadata.get(track.id))) records.push(track);
+        }
+        await metadata.upsertMany(records);
+        const filename = `playlist_${randomUUID()}.m3u8`;
+        const temp = `.${filename}.tmp`;
+        try {
+            await writePlaylist(temp, items, { name: oneLine(name).trim() || 'Untitled playlist', createdAt: Date.now(), isProtected: false, thumbnail: '' });
+            await vfs.rename(temp, filename);
+        } finally { await vfs.unlink(temp).catch(() => {}); }
+        return readPlaylistFile(filename);
+    },
+
     async musicPlaylistRename(playlistId: string, name: string): Promise<Playlist | null> {
         await ensureStorage();
         assertPlaylistId(playlistId);
@@ -1446,67 +1481,11 @@ export const routes = {
         });
     },
 
-    /**
-     * Autoplay / radio: songs similar to `seed`, from YouTube Music's automix
-     * "up next" engine. Non-YouTube seeds (JioSaavn, local files) are first
-     * matched to a YouTube Music song by title + artist. Ids in `exclude`
-     * (recently played / already queued) are filtered out.
-     */
-    async musicRadio(seed: Song, exclude: string[] = []): Promise<Song[]> {
-        await init();
-
-        // JioSaavn seeds: use JioSaavn's own recommendations first.
-        if (seed.id.startsWith('js:')) {
-            try {
-                const downloaded = new Set((await metadata.all()).filter((r) => r.file).map((r) => r.id));
-                const skip = new Set([...exclude, seed.id]);
-                const recos = (await Saavn.getRecommendations({ songId: seed.id.slice(3) }))
-                    .map((r) => saavnToSong(r, downloaded))
-                    .filter((r) => !skip.has(r.id));
-                if (recos.length) return recos;
-            } catch (err) {
-                console.warn('[radio] JioSaavn recommendations failed, falling back to YouTube Music:', err);
-            }
-        }
-
-        let videoId = seed.id.startsWith('yt:') ? seed.id.slice(3) : null;
-        if (!videoId) {
-            const query = `${seed.title} ${seed.artists.map((a) => a.name).join(' ')}`.trim();
-            const res = await yt.music.search(query, { type: 'song' });
-            videoId = res.songs?.contents?.[0]?.id ?? null;
-        }
-        if (!videoId) return [];
-
-        const panel = await yt.music.getUpNext(videoId, true);
-        const skip = new Set([...exclude, seed.id, `yt:${videoId}`]);
-        const downloaded = new Set((await metadata.all()).filter((r) => r.file).map((r) => r.id));
-        const seenTitles = new Set<string>();
-        const songs: Song[] = [];
-
-        for (const item of (panel?.contents ?? []) as any[]) {
-            // Automix panels can wrap items (e.g. PlaylistPanelVideoWrapper).
-            const video = item?.video_id ? item : item?.primary ?? item?.content;
-            if (!video?.video_id) continue;
-            const id = `yt:${video.video_id}`;
-            const title: string = video.title?.toString?.() || 'Untitled';
-            const artists = (video.artists?.length ? video.artists : [{ name: video.author || 'Unknown Artist' }]).map(
-                (a: any) => ({ name: a.name, thumbnails: [] }),
-            );
-            // Skip repeats and alternate uploads of the same song.
-            const titleKey = `${title.toLowerCase().replace(/\(.*?\)|\[.*?\]/g, '').trim()}|${artists[0]?.name?.toLowerCase()}`;
-            if (skip.has(id) || seenTitles.has(titleKey)) continue;
-            seenTitles.add(titleKey);
-            songs.push({
-                id,
-                title,
-                thumbnails: (video.thumbnail || []).map((t: any) => ({ url: t.url, width: t.width, height: t.height })),
-                artists,
-                album: video.album?.name ? { title: video.album.name, artists: [], thumbnails: [] } : null,
-                duration: video.duration?.seconds || 0,
-                isDownloaded: downloaded.has(id),
-            });
-        }
-        return songs;
+    /** Songs near the given seed for discovery, radio, or autoplay. */
+    async musicRadio(seed: Song, exclude: string[] = [], focused = false): Promise<Song[]> {
+        await ensureStorage();
+        const downloaded = new Set((await metadata.all()).filter((record) => record.file).map(({ id }) => id));
+        return fetchSongRadio(async () => { await init(); return yt.music; }, downloaded, seed, exclude, focused);
     },
 
     /**
@@ -1654,6 +1633,15 @@ export const routes = {
             return file ? { id: record.id, title: record.title, bytes: file.size, removable: /^(yt|js):/.test(record.id) } : null;
         }))).filter((entry) => entry !== null);
         return { audio, cacheBytes: 0 };
+    },
+
+    async musicOfflineTracks(): Promise<Song[]> {
+        await ensureStorage();
+        if (!vfs.isLocal) return [];
+        const files = await listAudioFiles();
+        await migrateLegacyFiles(files);
+        const present = new Set(files);
+        return (await metadata.all()).filter(({ file }) => file && present.has(file)).map(MetadataStore.toSong);
     },
 
     async musicRemoveDownload(id: string) {
@@ -1934,10 +1922,26 @@ export const routes = {
         return routes.zetaImportBytes(readFileSync(filePath));
     },
 
+    async zetaUndoImportTime(): Promise<number | null> {
+        return withPlaylistLock('backup-storage', async () => {
+            await ensureStorage();
+            return importCheckpointTime(vfs);
+        });
+    },
+
+    async zetaUndoImport(): Promise<boolean> {
+        return withPlaylistLock('backup-storage', async () => {
+            await ensureStorage();
+            try { return await undoImportCheckpoint(vfs); }
+            finally { await reloadStorage(); }
+        });
+    },
+
     async zetaImportBytes(bytes: Uint8Array) {
         const { manifest, readAudio } = await openZetaBackup(bytes);
         return withPlaylistLock('backup-storage', async () => {
             await ensureStorage();
+            const before = await captureImportFiles(vfs);
             const addedFiles: string[] = [];
             const records: IndexRecord[] = [];
             try {
@@ -2011,6 +2015,7 @@ export const routes = {
                 ? (await readMuzzaEventsFromDb(base.db)).map(({ zetaId, ...event }) => ({ songId: zetaId, ...event }))
                 : [];
             await stats.mergeEvents(manifest.events, baseEvents, manifest.names ?? {});
+            await saveImportCheckpoint(vfs, before, addedFiles);
             return backupCounts(manifest);
         });
     },
@@ -2182,52 +2187,13 @@ export const routes = {
         return { playlist: await readPlaylistFile(playlist.id), imported: importedSongs.length, skipped };
     },
 
-    /** Import a public YouTube playlist into the local library. */
     async youtubePlaylistImport(url: string): Promise<{ playlist: Playlist; imported: number; skipped: number }> {
         await init();
-        let parsed: URL;
-        try {
-            parsed = new URL(url);
-        } catch {
-            throw new Error('Enter a valid YouTube playlist URL.');
-        }
-
-        const host = parsed.hostname.toLowerCase().replace(/^www\./, '');
-        if (!['youtube.com', 'music.youtube.com', 'm.youtube.com', 'youtu.be'].includes(host)) {
-            throw new Error('Only YouTube playlist links are supported.');
-        }
-        const playlistId = parsed.searchParams.get('list');
-        if (!playlistId || !/^[\w-]{10,}$/.test(playlistId)) {
-            throw new Error('The link does not contain a valid YouTube playlist ID.');
-        }
-
-        const playlistInfo = await yt.getPlaylist(playlistId);
-        const downloaded = new Set((await metadata.all()).filter((record) => record.file).map((record) => record.id));
-        const songs: Song[] = [];
-        let skipped = 0;
-        let processed = 0;
-        let page = playlistInfo;
-
-        while (processed < 500) {
-            for (const item of page.items) {
-                if (processed >= 500) break;
-                processed++;
-                const song = ytToSong(item, downloaded);
-                if (song) songs.push(song);
-                else skipped++;
-            }
-            if (processed >= 500 || !page.has_continuation) break;
-            page = await page.getContinuation();
-        }
-
-        const remaining = Number.parseInt(playlistInfo.info.total_items, 10);
-        if (Number.isFinite(remaining)) skipped += Math.max(0, remaining - processed);
-        if (!songs.length) throw new Error('No playable tracks were found in this YouTube playlist.');
-
-        const name = musicText(playlistInfo.info.title ?? '').trim() || 'YouTube playlist';
-        const playlist = await routes.musicPlaylistCreate(name);
-        await writePlaylist(playlist.id, songs, await readPlaylistMeta(playlist.id));
-        return { playlist: await readPlaylistFile(playlist.id), imported: songs.length, skipped };
+        const downloaded = new Set((await metadata.all()).filter(({ file }) => file).map(({ id }) => id));
+        const { name, songs, skipped } = await fetchYoutubePlaylist(url, downloaded,
+            (id) => yt.getPlaylist(id), (id) => yt.music.getPlaylist(id));
+        const playlist = await routes.musicPlaylistSave(name, songs);
+        return { playlist, imported: songs.length, skipped };
     },
 
     /* ------------------------------- stats -------------------------------- */

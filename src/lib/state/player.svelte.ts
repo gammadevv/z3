@@ -4,7 +4,8 @@ import type { Stream, Song, Playlist } from "$lib/schema";
 import { shuffle, isSyncedLyrics, slimSong } from "$lib/utils";
 import { libraryState } from "$lib/state/library.svelte";
 import { getStreamingQuality } from "$lib/audio-quality";
-import { filterRadioRecommendations } from "$lib/playlist-recommendations";
+import { WeakConnection } from "$lib/weak-connection";
+import { filterPlaylistRecommendations, matchRadioSeed, offlineRadioTracks, rankRecommendationLists } from "$lib/playlist-recommendations";
 
 export interface CacheRecord {
     stream: Stream,
@@ -51,8 +52,12 @@ interface PlayerState {
     autoplay: boolean,
     /** Suggested tracks waiting to play when the context ends. */
     autoplayTracks: Song[],
-    /** The track the current suggestions were based on. */
+    /** The original song for the active radio or pending autoplay. */
     autoplaySeed: Song | null,
+    radioSeeds: Song[],
+    weakConnectionMode: boolean,
+    autoplayExhausted: boolean,
+    offlineRadio: boolean,
 
     /** Shuffled play order (track ids) for the context. Unused when not shuffling. */
     _order: string[],
@@ -68,7 +73,7 @@ interface PlayerState {
 const HISTORY_LIMIT = 200;
 const PREFS_KEY = "zeta:player-prefs";
 
-function loadPrefs(): Partial<Pick<PlayerState, "repeat" | "shuffle" | "volume" | "muted" | "autoplay">> {
+function loadPrefs(): Partial<Pick<PlayerState, "repeat" | "shuffle" | "volume" | "muted" | "autoplay" | "weakConnectionMode">> {
     if (!browser) return {};
     try {
         return JSON.parse(localStorage.getItem(PREFS_KEY) || "{}");
@@ -102,6 +107,10 @@ export const playerState = $state<PlayerState>({
     autoplay: prefs.autoplay !== false,
     autoplayTracks: [],
     autoplaySeed: null,
+    radioSeeds: [],
+    weakConnectionMode: prefs.weakConnectionMode === true,
+    autoplayExhausted: false,
+    offlineRadio: false,
 
     _order: [],
     _anchorId: null,
@@ -112,8 +121,8 @@ export const playerState = $state<PlayerState>({
 
 export function savePlayerPrefs() {
     if (!browser) return;
-    const { repeat, shuffle, volume, muted, autoplay } = playerState;
-    localStorage.setItem(PREFS_KEY, JSON.stringify({ repeat, shuffle, volume, muted, autoplay }));
+    const { repeat, shuffle, volume, muted, autoplay, weakConnectionMode } = playerState;
+    localStorage.setItem(PREFS_KEY, JSON.stringify({ repeat, shuffle, volume, muted, autoplay, weakConnectionMode }));
 }
 
 /* -------------------------------------------------------------------------- */
@@ -240,7 +249,7 @@ export function getUpcomingContext(limit = 50): Song[] {
     if (!ids.length) return [];
     const pos = anchorPosition(ids);
     let upcoming = ids.slice(pos + 1);
-    if (playerState.repeat === "all" && !playerState.shuffle) upcoming = upcoming.concat(ids.slice(0, pos + 1));
+    if (playerState.repeat === "all" && !playerState.shuffle && !isRadioContext()) upcoming = upcoming.concat(ids.slice(0, pos + 1));
     return upcoming
         .slice(0, limit)
         .map(trackById)
@@ -305,6 +314,9 @@ export function playTrack(track: Song) {
     playerState.currentPlaylist = null;
     playerState.autoplayTracks = [];
     playerState.autoplaySeed = null;
+    playerState.radioSeeds = [];
+    playerState.autoplayExhausted = false;
+    playerState.offlineRadio = false;
     playerState._order = [];
     playerState._anchorId = null;
     playerState._anchorIndex = -1;
@@ -319,6 +331,9 @@ export function mirrorTrack(track: Song) {
     playerState.currentPlaylist = null;
     playerState.autoplayTracks = [];
     playerState.autoplaySeed = null;
+    playerState.radioSeeds = [];
+    playerState.autoplayExhausted = false;
+    playerState.offlineRadio = false;
     playerState._order = [];
     playerState._anchorId = null;
     playerState._anchorIndex = -1;
@@ -354,7 +369,10 @@ export function playPlaylist(playlist: Playlist, startIndex?: number, shuffleFla
     pushHistory();
     playerState.currentPlaylist = playlist;
     playerState.autoplayTracks = [];
-    playerState.autoplaySeed = null;
+    playerState.autoplaySeed = isRadioContext(playlist) ? playlist.tracks[0] : null;
+    playerState.radioSeeds = [];
+    playerState.autoplayExhausted = false;
+    playerState.offlineRadio = false;
     playerState._order = playerState.shuffle ? buildShuffledOrder(playlist, start.id) : [];
     playerState._anchorId = start.id;
     playerState._anchorIndex = contextIds().indexOf(start.id);
@@ -423,6 +441,10 @@ export function isRadioContext(playlist: Playlist | null = playerState.currentPl
     return !!playlist?.id.startsWith(RADIO_PREFIX);
 }
 
+export function snapshotRadioTracks(radio: Playlist): Song[] {
+    return $state.snapshot(radio.tracks) as Song[];
+}
+
 /** Continue into an "Autoplay" radio context built from the pending suggestions. */
 function startAutoplay() {
     const first = autoplayCandidate();
@@ -456,58 +478,75 @@ let autoplayFetching: string | null = null;
 let autoplayRetried: string | null = null;
 let radioRequest = 0;
 
+export const stationDraft = $state<{ tracks: Song[]; starting: boolean }>({ tracks: [], starting: false });
+
+export function addRadioSeed(seeds: Song[], track: Song): Song[] {
+    return seeds.length < 3 && !matchRadioSeed(track, seeds) ? [...seeds, track] : seeds;
+}
+
+async function stationRecommendations(seeds: Song[], known: Song[], limit: number) {
+    const excluded = [...known, ...seeds];
+    const ids = [...new Set(excluded.map(({ id }) => id))];
+    const results = await Promise.allSettled(seeds.map((seed) =>
+        client.musicRadio(slimSong($state.snapshot(seed) as Song), ids, true),
+    ));
+    const lists = results.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []);
+    if (!lists.length) {
+        const error = results.find((result) => result.status === 'rejected');
+        throw error?.reason ?? new Error('The provider could not start this radio.');
+    }
+    return filterPlaylistRecommendations(lists.length === 1 ? lists[0] : rankRecommendationLists(lists), excluded, limit);
+}
+
 /**
- * Keep suggestions topped up: once fewer than two tracks remain, fetch songs
- * similar to the current one. In a radio context they're appended to it so the
- * station just keeps going. Safe to call often (it no-ops when not needed).
+ * Refill near the end of a queue. Radio refills use the station's original
+ * seed so one recommendation cannot steer the following batch away from it.
  */
 export async function refreshAutoplay() {
-    const seed = playerState.currentTrack;
-    if (!playerState.autoplay || !seed) return;
+    const current = playerState.currentTrack;
+    if (!playerState.autoplay || !current || playerState.offlineRadio) return;
     if (remainingBeforeEnd() >= 2) return;
-    const inRadio = isRadioContext();
-    if (!inRadio && playerState.autoplaySeed?.id === seed.id && playerState.autoplayTracks.length) return;
     const context = playerState.currentPlaylist;
+    const inRadio = isRadioContext(context);
+    const seed = (inRadio ? playerState.autoplaySeed ?? context?.tracks[0] : null) ?? current;
+    if (playerState.autoplaySeed?.id !== seed.id) {
+        playerState.autoplaySeed = seed;
+        playerState.autoplayTracks = [];
+        playerState.autoplayExhausted = false;
+    }
+    if (playerState.autoplayExhausted || (!inRadio && playerState.autoplayTracks.length)) return;
     const fetchKey = `${context?.id ?? "single"}:${seed.id}`;
     if (autoplayFetching === fetchKey) return;
+    const stillCurrent = () => playerState.autoplay && playerState.currentPlaylist === context
+        && (inRadio || playerState.currentTrack?.id === seed.id);
+    const knownTracks = () => [
+        ...playerState._history.slice(-100).map(({ track }) => track),
+        ...(contextPlaylist()?.tracks ?? []),
+        ...playerState.upNext,
+        seed,
+    ];
 
     autoplayFetching = fetchKey;
     try {
-        const known = [
-            ...playerState._history.slice(-100).map((h) => h.track),
-            ...(contextPlaylist()?.tracks ?? []),
-            ...playerState.upNext,
-            seed,
-        ];
-        const exclude = new Set(known.map((t) => t.id));
-        // The same song often exists under several uploads/ids; match by name too.
-        const suggestions = await client.musicRadio(slimSong($state.snapshot(seed) as Song), [...exclude]);
-        if (
-            playerState.currentTrack?.id !== seed.id
-            || playerState.currentPlaylist !== context
-            || !playerState.autoplay
-        ) return;
-        const fresh = filterRadioRecommendations(seed, suggestions, known, 25);
-        if (!fresh.length) return;
-
-        if (isRadioContext()) {
+        const seeds = inRadio && playerState.radioSeeds.length ? [...playerState.radioSeeds] : [seed];
+        const suggestions = await stationRecommendations(seeds, knownTracks(), 25);
+        if (!stillCurrent()) return;
+        const fresh = filterPlaylistRecommendations(suggestions, knownTracks(), 25);
+        playerState.autoplayExhausted = fresh.length === 0;
+        autoplayRetried = null;
+        if (inRadio && fresh.length) {
             playerState.currentPlaylist!.tracks.push(...fresh);
+            syncShuffledOrder();
         } else {
-            playerState.autoplaySeed = seed;
             playerState.autoplayTracks = fresh;
         }
-        autoplayRetried = null;
     } catch (err) {
         console.warn("[autoplay] Could not fetch suggestions:", err);
         // Transient failures (network, backend still starting): try once more.
         if (autoplayRetried !== fetchKey) {
             autoplayRetried = fetchKey;
             setTimeout(() => {
-                if (
-                    playerState.currentTrack?.id === seed.id
-                    && playerState.currentPlaylist === context
-                    && playerState.autoplay
-                ) refreshAutoplay();
+                if (stillCurrent()) refreshAutoplay();
             }, 8000);
         }
     } finally {
@@ -517,31 +556,47 @@ export async function refreshAutoplay() {
 
 export function setAutoplay(enabled: boolean) {
     playerState.autoplay = enabled;
+    playerState.autoplayExhausted = false;
     if (!enabled) playerState.autoplayTracks = [];
     savePlayerPrefs();
     if (enabled) refreshAutoplay();
 }
 
-/** Start a radio station seeded from a track ("Go to song radio"). */
-export async function startRadio(seed: Song) {
+/** Start a focused station, or build an offline mix from files on this device. */
+export async function startRadio(seed?: Song, offline = false, extraSeeds: Song[] = []) {
     const request = ++radioRequest;
     const currentTrackId = playerState.currentTrack?.id;
     const currentContext = playerState.currentPlaylist;
-    const suggestions = await client.musicRadio(slimSong($state.snapshot(seed) as Song), []);
+    const useOffline = offline || !seed || (browser && !navigator.onLine);
+    const seeds = seed ? extraSeeds.reduce(addRadioSeed, [seed]) : [];
+    let tracks: Song[];
+    if (useOffline) {
+        const available = await client.musicOfflineTracks();
+        const lists = (seeds.length ? seeds : [undefined]).map((song) => offlineRadioTracks(song, available, libraryState.playlists));
+        tracks = lists.length === 1 ? lists[0] : rankRecommendationLists(lists).slice(0, 50);
+    } else {
+        tracks = [...seeds, ...await stationRecommendations(seeds, [], 50 - seeds.length)];
+    }
     if (
         request !== radioRequest
         || playerState.currentTrack?.id !== currentTrackId
         || playerState.currentPlaylist !== currentContext
     ) return;
-    const tracks = filterRadioRecommendations(seed, suggestions, [], 50);
+    if (!tracks.length) throw new Error('No downloaded songs are available for offline radio.');
     const radio: Playlist = {
         id: `${RADIO_PREFIX}${Date.now()}`,
-        name: `${seed.title} Radio`,
-        tracks: [seed, ...tracks],
+        name: seeds.length > 1 ? (useOffline ? 'Multi-song Offline Radio' : 'Multi-song Radio')
+            : useOffline ? (seed ? `${seed.title} Offline Radio` : 'Offline Radio') : `${seed?.title} Radio`,
+        tracks,
         createdAt: Date.now(),
         isProtected: true,
     };
     playPlaylist(radio, 0);
+    playerState.offlineRadio = useOffline;
+    playerState.autoplaySeed = seed ?? tracks[0];
+    playerState.radioSeeds = seeds;
+    playerState.autoplayExhausted = !useOffline && tracks.length === seeds.length;
+    return true;
 }
 
 /** Called when a track finishes on its own (vs. the user pressing next). */
@@ -727,6 +782,18 @@ function trimCache() {
     }
 }
 
+const weakConnection = new WeakConnection();
+
+export function setWeakConnectionMode(enabled: boolean) {
+    playerState.weakConnectionMode = enabled;
+    weakConnection.reset();
+    savePlayerPrefs();
+}
+
+export function recordPlaybackWait(waitMs: number) {
+    if (playerState.weakConnectionMode) weakConnection.observe(waitMs, performance.now());
+}
+
 export function loadTrack(track: Song | null): Promise<void> {
     if (!track) return Promise.resolve();
     const hit = cache.get(track.id);
@@ -751,12 +818,14 @@ export function loadTrack(track: Song | null): Promise<void> {
 
         // Only the audio gates playback. A stream failure propagates so callers
         // can surface it to the user.
+        const preferredQuality = getStreamingQuality();
+        const quality = weakConnection.quality(preferredQuality, performance.now());
         const stream = await client.musicStream(
             track.id,
             undefined,
-            true,
+            quality === preferredQuality,
             slimSong($state.snapshot(track) as Song),
-            getStreamingQuality(),
+            quality,
         );
 
         // If fetching this track also saved it to disk, reflect that in the library.

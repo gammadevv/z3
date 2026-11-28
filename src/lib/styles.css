@@ -105,9 +105,7 @@
     scroll-padding-bottom: calc(240px + env(safe-area-inset-bottom, 0px));
 }
 
-/* Linux: a transparent window around a rounded, clipped app shell, since the
-   window manager doesn't round frameless windows. */
-[data-os="linux"] html,
+/* The transparent Linux window lets the compositor show the rounded shell. */
 [data-os="linux"] body {
     background: transparent;
 }
@@ -117,7 +115,6 @@
 [data-os="linux"] #shell {
     background: var(--bg);
     border-radius: var(--window-radius);
-    /* Also makes fixed-position layers relative to the shell, so they're clipped too. */
     clip-path: inset(0 round var(--window-radius));
 }
 [data-maximized="true"] #shell,

@@ -1,6 +1,6 @@
 {
 	"name": "z3",
-	"version": "0.6.4",
+	"version": "0.6.5",
 	"type": "module",
 	"main": "dist-electron/main.js",
 	"author": "uukelele <uukelele@proton.me>",
@@ -9,6 +9,14 @@
 		"appId": "com.zeta.z3",
 		"npmRebuild": false,
 		"productName": "Zeta",
+		"protocols": [
+			{
+				"name": "Zeta Track Links",
+				"schemes": [
+					"zeta"
+				]
+			}
+		],
 		"directories": {
 			"output": "dist-release"
 		},

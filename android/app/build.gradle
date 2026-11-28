@@ -14,8 +14,8 @@ android {
         manifestPlaceholders.zetaAppLabel = "@string/app_name"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 16
-        versionName "0.6.4"
+        versionCode 17
+        versionName "0.6.5"
         resValue "string", "zeta_release_repo", releaseRepo
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {

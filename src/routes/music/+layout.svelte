@@ -15,13 +15,15 @@
     import { page } from "$app/state";
     import { afterNavigate } from "$app/navigation";
     import { fly } from "svelte/transition";
-    import { onDestroy } from "svelte";
+    import { onDestroy, onMount } from "svelte";
+    import { settingsState } from "$lib/state/settings.svelte";
     import { isAndroid } from '$lib/platform';
 
     let { children } = $props();
 
     let main = $state<HTMLElement>();
     onDestroy(() => discordVoice.stop());
+    onMount(() => settingsState.startSnapshots());
 
     // Each page starts at the top.
     afterNavigate(() => {

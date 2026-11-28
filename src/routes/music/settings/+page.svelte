@@ -7,7 +7,7 @@
     import LibraryMaintenance from "$lib/components/LibraryMaintenance.svelte";
     import Icon from "$lib/components/Icon.svelte";
     import { settingsState } from "$lib/state/settings.svelte";
-    import { playerState, setAutoplay } from "$lib/state/player.svelte";
+    import { playerState, setAutoplay, setWeakConnectionMode } from "$lib/state/player.svelte";
     import { ui } from "$lib/state/ui.svelte";
     import { VISUALIZER_PACKS } from "$lib/visualizer/packs";
     import { isAndroid } from '$lib/platform';
@@ -16,6 +16,22 @@
     import { androidPreferences } from '$lib/state/android.svelte';
     import ScrobblingSettings from '$lib/components/ScrobblingSettings.svelte';
     import AudioQualityPicker from '$lib/components/AudioQualityPicker.svelte';
+
+    const snapshotDate = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' });
+    const snapshotTime = new Intl.DateTimeFormat(undefined, { timeStyle: 'short' });
+
+    let settingTray = $state(false);
+    async function toggleTray() {
+        settingTray = true;
+        try {
+            const enabled = !ui.minimizeToTray;
+            ui.minimizeToTray = await client.windowSetMinimizeToTray(enabled);
+            ui.save();
+            if (enabled && !ui.minimizeToTray) toasts.error('The system tray is unavailable.');
+        } catch (error) {
+            toasts.error(error);
+        } finally { settingTray = false; }
+    }
 
     let browserProfiles = $state<Awaited<ReturnType<typeof client.listYoutubeBrowserProfiles>>>([]);
     let loadingBrowserProfiles = $state(true);
@@ -35,10 +51,10 @@
 
     onMount(() => {
         if (!isAndroid) void refreshBrowserProfiles();
+        void settingsState.refreshBackupHistory().catch((error) => toasts.error(error));
     });
 
     let includeBackupAudio = $state(true);
-    let showDuplicates = $state(false);
     let importing = $state(false);
     async function importMusic() {
         importing = true;
@@ -153,7 +169,7 @@
             <div class="row">
                 <div>
                     <strong>Autoplay</strong>
-                    <p>When your music ends, keep playing similar songs.</p>
+                    <p>Keep playing close matches when your queue ends.</p>
                 </div>
                 <button class="switch" role="switch" aria-label="Autoplay" aria-checked={playerState.autoplay} onclick={() => setAutoplay(!playerState.autoplay)}></button>
             </div>
@@ -284,6 +300,14 @@
             </div>
             <div class="row">
                 <div>
+                    <strong>Weak connection mode</strong>
+                    <p>After repeated slow loads, temporarily use smaller streams for new tracks.</p>
+                </div>
+                <button class="switch" role="switch" aria-label="Weak connection mode" aria-checked={playerState.weakConnectionMode}
+                    onclick={() => setWeakConnectionMode(!playerState.weakConnectionMode)}></button>
+            </div>
+            <div class="row">
+                <div>
                     <strong>Download quality</strong>
                     <p>Quality used when saving music for offline listening.</p>
                 </div>
@@ -299,6 +323,16 @@
     <section class="group">
         <h2><Icon name="sparkles" /> Appearance</h2>
         <div class="card rows">
+            {#if !isAndroid}
+                <div class="row">
+                    <div>
+                        <strong>Minimize to tray</strong>
+                        <p>Minimizing or closing keeps Zeta playing in the background. Use the tray icon to reopen or quit.</p>
+                    </div>
+                    <button class="switch" role="switch" aria-label="Minimize to tray" aria-checked={ui.minimizeToTray}
+                        disabled={settingTray} onclick={toggleTray}></button>
+                </div>
+            {/if}
             <div class="row">
                 <div>
                     <strong>Lite mode</strong>
@@ -400,28 +434,7 @@
                     Import Spotify CSV
                 </button>
             </div>
-            <p class="muted">
-                Export a playlist CSV from <a href="https://exportify.net/" target="_blank" rel="noreferrer">Exportify</a>.
-                Spotify tracks are matched to playable YouTube Music versions. You can also import a public YouTube playlist:
-            </p>
-            <div class="dir-row">
-                <input
-                    class="input"
-                    type="url"
-                    spellcheck="false"
-                    autocomplete="off"
-                    bind:value={youtubePlaylistUrl}
-                    placeholder="https://www.youtube.com/playlist?list=..."
-                />
-                <button
-                    class="btn"
-                    onclick={() => settingsState.importYoutubePlaylist(youtubePlaylistUrl)}
-                    disabled={!youtubePlaylistUrl.trim() || settingsState.busyOnlinePlaylist !== false}
-                >
-                    {#if settingsState.busyOnlinePlaylist === "youtube"}<span class="spin"><Icon name="loader-circle" /></span>{:else}<Icon name="list-music" />{/if}
-                    Import YouTube playlist
-                </button>
-            </div>
+            <p class="muted">Export a playlist CSV from <a href="https://exportify.net/" target="_blank" rel="noreferrer">Exportify</a> to import your Spotify playlists.</p>
             <div class="dir-row">
                 <input
                     class="input"
@@ -450,12 +463,33 @@
     {/if}
 
     <section class="group">
+        <h2><Icon name="list-music" /> YouTube playlist import</h2>
+        <div class="card block">
+            <p class="muted">Paste a public or unlisted playlist link from YouTube or YouTube Music.</p>
+            <form class="dir-row" onsubmit={(event) => {
+                event.preventDefault();
+                void settingsState.importYoutubePlaylist(youtubePlaylistUrl);
+            }}>
+                <input class="input" type="url" aria-label="YouTube playlist URL"
+                    spellcheck="false" autocomplete="off" bind:value={youtubePlaylistUrl}
+                    placeholder="https://www.youtube.com/playlist?list=..." />
+                <button class="btn" type="submit" disabled={!youtubePlaylistUrl.trim() || settingsState.busyOnlinePlaylist !== false}>
+                    {#if settingsState.busyOnlinePlaylist === "youtube"}
+                        <span class="spin"><Icon name="loader-circle" /></span>
+                    {:else}<Icon name="list-music" />{/if}
+                    Import YouTube playlist
+                </button>
+            </form>
+        </div>
+    </section>
+
+    <section class="group">
         <h2><Icon name="sliders-horizontal" /> Sound</h2>
         <AudioEffects />
     </section>
     <section class="group">
         <h2><Icon name="library" /> Library maintenance</h2>
-        <LibraryMaintenance bind:showDuplicates />
+        <LibraryMaintenance />
     </section>
     <section class="group"><PeerSettings includeAudio={includeBackupAudio} /></section>
 
@@ -476,13 +510,46 @@
                     onclick={() => settingsState.transferZetaBackup('import')}>
                     <Icon name="download" /> Import Zeta backup
                 </button>
-                {#if settingsState.backupDuplicateCount}
-                    <button class="btn" onclick={() => {
-                        showDuplicates = true;
-                        document.getElementById('duplicate-review')?.scrollIntoView();
-                    }}>Review possible duplicates ({settingsState.backupDuplicateCount})</button>
-                {/if}
             </div>
+        </div>
+        <div class="card block snapshot-card">
+            <div class="snapshot-heading">
+                <div>
+                    <h3>Library snapshots</h3>
+                    <p class="muted">Zeta saves a daily copy of your library metadata on this device and keeps the latest three.</p>
+                </div>
+                <button class="btn" disabled={settingsState.busyZetaBackup || !!settingsState.busyMuzza}
+                    onclick={() => settingsState.backUpLibrary(true)}><Icon name="archive" /> Back up now</button>
+            </div>
+            {#if settingsState.snapshotError}
+                <p class="muted" role="status">The last snapshot could not be saved.</p>
+            {/if}
+            {#if settingsState.snapshotTimes.length}
+                <ul class="snapshot-list" aria-label="Saved library snapshots">
+                    {#each settingsState.snapshotTimes as time (time)}
+                        <li class="snapshot-row">
+                            <span class="snapshot-icon"><Icon name="history" /></span>
+                            <time datetime={new Date(time).toISOString()}>
+                                <strong>{snapshotDate.format(time)}</strong>
+                                <span>{snapshotTime.format(time)}</span>
+                            </time>
+                            <button class="btn snapshot-preview" disabled={settingsState.busyZetaBackup || !!settingsState.busyMuzza}
+                                aria-label={`Preview snapshot from ${snapshotDate.format(time)}, ${snapshotTime.format(time)}`}
+                                onclick={() => settingsState.restoreLibrarySnapshot(time)}>Preview</button>
+                        </li>
+                    {/each}
+                </ul>
+            {:else}
+                <p class="muted">No snapshots saved yet.</p>
+            {/if}
+            {#if settingsState.lastImportTime}
+                {@const imported = settingsState.lastImportTime}
+                <div class="snapshot-import">
+                    <span>Last import <time datetime={new Date(imported).toISOString()}>{snapshotDate.format(imported)} · {snapshotTime.format(imported)}</time></span>
+                    <button class="btn" disabled={settingsState.busyZetaBackup || !!settingsState.busyMuzza}
+                        onclick={() => settingsState.undoLastZetaImport()}><Icon name="undo-2" /> Undo last import</button>
+                </div>
+            {/if}
         </div>
     </section>
 
@@ -563,6 +630,83 @@
     }
     .block a {
         color: var(--accent);
+    }
+    .snapshot-card {
+        margin-top: 10px;
+    }
+    .snapshot-heading,
+    .snapshot-import {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px 16px;
+    }
+    .snapshot-heading > div {
+        flex: 1 1 240px;
+    }
+    .snapshot-heading h3 {
+        font-size: 15px;
+        margin: 0 0 3px;
+    }
+    .snapshot-heading p {
+        font-size: 13px;
+    }
+    .snapshot-list {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        border: 1px solid var(--border);
+        border-radius: var(--r-md);
+        background: var(--surface-1);
+    }
+    .snapshot-row {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 12px;
+    }
+    .snapshot-row + .snapshot-row {
+        border-top: 1px solid var(--border);
+    }
+    .snapshot-icon {
+        display: grid;
+        place-items: center;
+        width: 34px;
+        height: 34px;
+        border-radius: var(--r-sm);
+        background: var(--surface-2);
+        color: var(--text-2);
+    }
+    .snapshot-icon :global(svg) {
+        width: 16px;
+        height: 16px;
+    }
+    .snapshot-row time {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        font-size: 13px;
+    }
+    .snapshot-row time span,
+    .snapshot-import time {
+        color: var(--text-2);
+        font-size: 12px;
+    }
+    .snapshot-preview {
+        min-height: 32px;
+        padding: 0 12px;
+    }
+    .snapshot-import {
+        border-top: 1px solid var(--border);
+        padding-top: 10px;
+    }
+    .snapshot-import > span {
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+        font-size: 13px;
     }
     .dir-row {
         display: flex;

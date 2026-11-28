@@ -8,6 +8,8 @@ import { exposeIPC } from '@ephaptic/server/electron';
 import { routes } from './routes';
 import { initMpris, shutdownMpris, type MprisCommand } from './lib/mpris';
 import { callBackend, startBackend, stopBackend } from './lib/backend';
+import { queueTrackLink } from './lib/track-links';
+import { showWindow, watchTrayWindow } from './lib/window-tray';
 import { coverIdFromUrl } from '../src/lib/covers';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -37,14 +39,36 @@ protocol.registerSchemesAsPrivileged([
 	{ scheme: 'zeta-cover', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } },
 ])
 
+const primaryInstance = app.requestSingleInstanceLock();
+if (!primaryInstance) app.quit();
+
+function openTrackArgument(args: string[]) {
+    args.some(queueTrackLink);
+}
+
+if (primaryInstance) {
+    openTrackArgument(process.argv);
+    if (app.isPackaged && !process.env.ZETA_USER_DATA && process.platform === 'win32' && !process.env.PORTABLE_EXECUTABLE_FILE) {
+        app.setAsDefaultProtocolClient('zeta');
+    }
+    app.on('second-instance', (_event, args) => {
+        openTrackArgument(args);
+        showWindow(BrowserWindow.getAllWindows()[0]);
+    });
+    app.on('open-url', (event, url) => {
+        if (!queueTrackLink(url)) return;
+        event.preventDefault();
+        if (app.isReady()) showWindow(BrowserWindow.getAllWindows()[0] ?? createWindow());
+    });
+}
+
 function createWindow() {
 	const dev = process.env.VITE_DEV_SERVER_URL;
 	// The OS title bar is gone everywhere and the renderer draws its own chrome
 	// (see TitleBar.svelte). macOS keeps its native traffic lights inset into
 	// our bar and Windows keeps the standard buttons as a transparent overlay.
-	// Linux's overlay can't be transparent (it paints an opaque box) and its
-	// window managers rarely round frameless windows, so there the app draws its
-	// own buttons and the window is transparent around a rounded, clipped shell.
+	// Map the Linux window immediately so the compositor can start painting
+	// the transparent edge and the renderer's rounded shell.
 	const mac = process.platform === 'darwin';
 	const linux = process.platform === 'linux';
 
@@ -53,9 +77,9 @@ function createWindow() {
 		height: 800,
 		minWidth: 880,
 		minHeight: 600,
-		show: false,
+		show: linux,
 		backgroundColor: linux ? '#00000000' : '#07060b',
-		frame: linux ? false : true,
+		frame: !linux,
 		transparent: linux,
 		titleBarStyle: mac ? 'hiddenInset' : linux ? undefined : 'hidden',
 		trafficLightPosition: mac ? { x: 18, y: 14 } : undefined,
@@ -67,9 +91,9 @@ function createWindow() {
 		icon: dev ? join(__dirname, '../static/zeta.png') : join(__dirname, '../build/zeta.png'),
 	});
 
+	watchTrayWindow(win);
 	win.removeMenu();
-	// Avoid the white flash before the first paint on launch.
-	win.once('ready-to-show', () => win.show());
+	if (!linux) win.once('ready-to-show', () => win.show());
 
 	if (dev) {
 		win.loadURL(dev);
@@ -92,6 +116,7 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+	if (!primaryInstance) return;
 	// Spin the backend up first so it's warm by the time the UI asks for data.
 	startBackend();
 
@@ -182,7 +207,9 @@ app.whenReady().then(() => {
 
 	// macOS: re-create a window when the dock icon is clicked and none are open.
 	app.on('activate', () => {
-		if (BrowserWindow.getAllWindows().length === 0) createWindow();
+		const win = BrowserWindow.getAllWindows()[0];
+		if (win) showWindow(win);
+		else createWindow();
 	});
 });
 

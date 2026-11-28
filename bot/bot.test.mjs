@@ -75,7 +75,7 @@ function wayshipMock() {
     const inbox = [];
     const calls = [];
     const desktop = { peer_id: 'zeta-0001', device_name: 'Desktop' };
-    const phone = { peer_id: 'zeta-0002', device_name: 'Android' };
+    const phone = { peer_id: 'zeta-0002', device_name: 'Android', meta: { platform: 'android' } };
     const client = wayshipClient(async (url, options) => {
         assert.equal(options.headers.Authorization, `Bearer ${token}`);
         const { origin, pathname } = new URL(url);
@@ -131,6 +131,16 @@ test('Wayship verifies the token, chooses the playback host, and only sends one 
     await assert.rejects(client.run(token, { action: 'pause' }, desktop.device_name), /following another player/);
     assert.equal(signals.filter(({ command }) => command === 'pause').length, 0);
     assert.equal(calls.at(-1), '/api/peers/leave');
+});
+
+test('Wayship lists Android separately and targets it explicitly for playback', async () => {
+    const { client, token, phone, signals } = wayshipMock();
+    const devices = await client.devices(token);
+    const android = devices.find(({ id }) => id === phone.peer_id);
+    assert.equal(android.platform, 'android');
+    assert.equal(android.playback.controllable, true);
+    await client.run(token, { action: 'pause' }, 'Android');
+    assert.deepEqual(signals.filter(({ command }) => command === 'pause'), [{ target: phone.peer_id, command: 'pause' }]);
 });
 
 test('Discord track searches and lyrics send the original query only to the Zeta playback host', async () => {
@@ -329,4 +339,62 @@ test('Wayship link modal keeps the credential out of the response and saves it f
             assert.ok(!JSON.stringify(embeds).includes(token));
         },
     });
+});
+
+test('a saved default routes transport and now-playing cards while explicit and voice targets take precedence', async (context) => {
+    const directory = mkdtempSync(join(tmpdir(), 'zeta-default-device-'));
+    context.after(() => rmSync(directory, { recursive: true, force: true }));
+    const store = accounts(directory);
+    store.set('100', 'wayship', { token: 'test-token' });
+
+    const requests = [];
+    let voiceDevice;
+    const handle = interactions({
+        accounts: store,
+        scrobbling: {},
+        voice: { deviceFor: () => voiceDevice },
+        wayship: {
+            devices: async () => [{ id: 'phone-01', name: 'Phone' }],
+            run: async (token, { action }, id) => {
+                assert.equal(token, 'test-token');
+                requests.push([action, id]);
+                return { name: 'Private device name', result: { playback: {
+                    phase: 'playing', position: 61, duration: 123,
+                    track: { title: 'A track', artist: 'An artist', coverUrl: 'https://example.com/cover.png' },
+                } } };
+            },
+        },
+    });
+    async function issue(commandName, args = {}) {
+        let response;
+        await handle({
+            isButton: () => false,
+            isModalSubmit: () => false,
+            isChatInputCommand: () => true,
+            inGuild: () => false,
+            commandName,
+            user: { id: '100' },
+            options: { getString: (key) => args[key] ?? null, getInteger: () => null, getBoolean: (key) => args[key] ?? null },
+            deferReply: async () => {},
+            editReply: async ({ embeds }) => { response = embeds[0].toJSON(); },
+        });
+        return response;
+    }
+
+    assert.equal((await issue('defaultdevice', { device: 'Phone' })).title, 'Default device saved');
+    assert.equal(accounts(directory).get('100').defaultDevice.id, 'phone-01');
+    const card = await issue('nowplaying');
+    assert.deepEqual(requests.pop(), ['status', 'phone-01']);
+    assert.equal(card.image.url, 'https://example.com/cover.png');
+    assert.match(card.description, /1:01 \/ 2:03/);
+    assert.doesNotMatch(card.description, /Private device name/);
+    voiceDevice = 'voice-pc';
+    await issue('pause', { device: 'explicit-pc' });
+    assert.deepEqual(requests.pop(), ['pause', 'explicit-pc']);
+    await issue('pause');
+    assert.deepEqual(requests.pop(), ['pause', 'voice-pc']);
+    voiceDevice = undefined;
+    await issue('defaultdevice', { clear: true });
+    await issue('pause');
+    assert.deepEqual(requests.pop(), ['pause', undefined]);
 });

@@ -5,7 +5,7 @@ import { toasts } from "$lib/state/toast.svelte";
 import { ui } from "$lib/state/ui.svelte";
 import { downloads } from "$lib/state/downloads.svelte";
 import { BACKUP_AUDIO_LIMIT_MESSAGE, backupCounts, openZetaBackup } from "$lib/zeta-backup";
-import { duplicateSongs } from "$lib/library-tools";
+import { listSnapshots, loadSnapshot, saveSnapshot } from "$lib/library-snapshots";
 import {
     getDownloadQuality,
     getStreamingQuality,
@@ -156,7 +156,72 @@ class SettingsStore {
     }
 
     busyZetaBackup = $state(false);
-    backupDuplicateCount = $state(0);
+    snapshotTimes = $state<number[]>([]);
+    lastImportTime = $state<number | null>(null);
+    snapshotError = $state(false);
+    private snapshotWork: Promise<void> | undefined;
+
+    startSnapshots() {
+        const run = () => void this.backUpLibrary(false);
+        run();
+        window.addEventListener('focus', run);
+        const timer = window.setInterval(run, 60 * 60 * 1000);
+        return () => { window.removeEventListener('focus', run); window.clearInterval(timer); };
+    }
+
+    async refreshBackupHistory() {
+        this.snapshotTimes = await listSnapshots();
+        this.lastImportTime = await client.zetaUndoImportTime();
+    }
+
+    async backUpLibrary(manual: boolean) {
+        if (this.snapshotWork) await this.snapshotWork;
+        if (this.busyZetaBackup || this.busyMuzza) return;
+        if (manual) this.busyZetaBackup = true;
+        const work = (async () => {
+            try {
+                await saveSnapshot(async () => (await client.zetaBackupBytes(false)).bytes, manual);
+                this.snapshotTimes = await listSnapshots();
+                this.snapshotError = false;
+                if (manual) toasts.success('Saved a library snapshot.');
+            } catch (error) {
+                this.snapshotError = true;
+                if (manual) toasts.error(error);
+            } finally {
+                if (manual) this.busyZetaBackup = false;
+            }
+        })();
+        this.snapshotWork = work;
+        await work;
+        if (this.snapshotWork === work) this.snapshotWork = undefined;
+    }
+
+    async restoreLibrarySnapshot(time: number) {
+        if (this.busyZetaBackup || this.busyMuzza) return;
+        this.busyZetaBackup = true;
+        try {
+            const bytes = await loadSnapshot(time);
+            if (!bytes) throw new Error('That snapshot has expired.');
+            await this.previewZetaBackup(bytes);
+        } catch (error) { toasts.error(error); }
+        finally { this.busyZetaBackup = false; }
+    }
+
+    async undoLastZetaImport() {
+        if (this.busyZetaBackup || this.busyMuzza) return;
+        this.busyZetaBackup = true;
+        try {
+            if (!await ui.confirm('Undo the last Zeta import?', {
+                message: 'This will restore the library from just before the import. Zeta checks for later library changes first.',
+                confirmLabel: 'Undo import',
+            })) return;
+            if (!await client.zetaUndoImport()) throw new Error('There is no import to undo for this library.');
+            await libraryState.refresh();
+            this.lastImportTime = null;
+            toasts.success('Undid the last Zeta import.');
+        } catch (error) { toasts.error(error); }
+        finally { this.busyZetaBackup = false; }
+    }
 
     async transferZetaBackup(mode: 'export' | 'import', includeAudio = true) {
         if (this.busyZetaBackup || this.busyMuzza) return;
@@ -200,10 +265,8 @@ class SettingsStore {
         });
         if (!confirmed) return false;
         await client.zetaImportBytes(bytes);
+        this.lastImportTime = await client.zetaUndoImportTime();
         await libraryState.refresh();
-        const imported = new Set(manifest.songs.map(({ song }) => song.id));
-        this.backupDuplicateCount = duplicateSongs(libraryState.tracks.values())
-            .filter((group) => group.some(({ id }) => imported.has(id))).length;
         const missing = manifest.songs.filter(({ song, audio }) => !audio && !offline.has(song.id) && /^(yt|js):/.test(song.id))
             .map(({ song }) => libraryState.tracks.get(song.id) ?? song);
         toasts.success(`Imported ${counts.songs} songs and ${counts.playlists} playlists.`);

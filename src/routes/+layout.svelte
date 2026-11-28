@@ -6,6 +6,8 @@
 	import { ui } from '$lib/state/ui.svelte';
 	import { artworkState } from '$lib/state/artwork.svelte';
 	import { androidPreferences } from '$lib/state/android.svelte';
+	import { client } from "$lib/ephaptic";
+	import { listenForTrackLinks } from "$lib/state/track-links";
 	import { updates } from '$lib/state/updates.svelte';
 
 	let { children } = $props();
@@ -16,6 +18,12 @@
 	});
 
 	onMount(() => updates.start());
+	onMount(listenForTrackLinks);
+	onMount(() => {
+		if (!isAndroid && ui.minimizeToTray) void client.windowSetMinimizeToTray(true).then((enabled) => {
+			if (!enabled) { ui.minimizeToTray = false; ui.save(); }
+		}).catch(() => {});
+	});
 
 	onMount(() => {
 		if (!isAndroid) return;

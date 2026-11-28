@@ -269,6 +269,12 @@ class LibraryStore {
         }
     }
 
+    async savePlaylist(name: string, tracks: Song[]): Promise<Playlist> {
+        const playlist = await client.musicPlaylistSave(name, $state.snapshot(tracks) as Song[]);
+        this.playlists = [...this.playlists, playlist];
+        return playlist;
+    }
+
     async renamePlaylist(playlistId: string, name: string) {
         try {
             const updated = await client.musicPlaylistRename(playlistId, name);

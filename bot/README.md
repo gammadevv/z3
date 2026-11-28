@@ -59,6 +59,8 @@ Set `ZETA_BOT_DATA_DIR` to put it elsewhere. Use one bot process per data direct
 | Command | What it does |
 | --- | --- |
 | `/playing` | Shows live Zeta playback or the linked scrobbling service's live track. If neither is available, it can show the last played track. |
+| `/nowplaying` | Shares cover art, track details, and playback progress when a Zeta device provides them. |
+| `/defaultdevice` | Saves a player from `/devices` for your commands. Pass `clear: True` to remove it. An explicit device or your active voice session takes priority. |
 | `/recent`, `/toptracks`, `/topartists` | Shows data from the selected listening profile. Set `share:False` to reply privately. |
 | `/devices`, `/queue` | Lists online Zeta devices and the selected player's upcoming tracks. |
 | `/album` | Shows cover art, album details and up to five tracks. Provide a song to look it up in Zeta. |
@@ -71,6 +73,9 @@ Set `ZETA_BOT_DATA_DIR` to put it elsewhere. Use one bot process per data direct
 
 The bot prefers an online device that's already playing. Use the optional
 `device` argument to pick a specific one by name or by ID from `/devices`.
+On Android, `/devices` shows whether the phone is answering commands. If it
+shows no reply, bring Zeta to the foreground on the phone and check its Wayship
+connection in Settings before trying the command again.
 The selected Zeta app runs song searches, lyrics lookups, and playback. The bot
 passes requests and results over Wayship. Listening-profile lookups call Last.fm
 or ListenBrainz directly and can work with the player closed.

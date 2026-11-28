@@ -7,8 +7,12 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing tag to build and publish (e.g. v0.4.1)'
+        description: 'Existing tag to build (e.g. v0.6.5)'
         required: true
+      publish:
+        description: Publish the verified draft immediately
+        type: boolean
+        default: false
 
 env:
   RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
@@ -31,10 +35,7 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - name: Verify release version and credentials
-        env:
-          VITE_LASTFM_API_KEY: ${{ secrets.LASTFM_API_KEY }}
-          VITE_LASTFM_API_SECRET: ${{ secrets.LASTFM_API_SECRET }}
+      - name: Verify release version
         run: |
           node --input-type=module <<'JS'
           import { readFileSync } from 'node:fs';
@@ -42,12 +43,13 @@ jobs:
           if (process.env.RELEASE_TAG !== `v${version}`) throw new Error('Tag and package version must match.');
           const gradle = readFileSync('android/app/build.gradle', 'utf8');
           if (!gradle.includes(`versionName "${version}"`)) throw new Error('Android version must match the release.');
-          if (process.env.GITHUB_REPOSITORY === 'zeta-zx/z3' && (!process.env.VITE_LASTFM_API_KEY || !process.env.VITE_LASTFM_API_SECRET)) throw new Error('Last.fm build credentials are missing from repository secrets.');
+          if (!/^\s*versionCode\s+\d+\s*$/m.test(gradle)) throw new Error('Android version code is missing.');
           JS
       - run: npm ci
       - run: npm run check
-      - run: npm run test:android
-      - run: npm run test:scrobbling
+      - run: node --experimental-strip-types --test tests/*.test.mjs
+      - run: npm --prefix bot ci
+      - run: npm --prefix bot test
 
   # All publishers upload into one draft; users only see the complete release.
   prepare-release:
@@ -66,7 +68,8 @@ jobs:
           set -euo pipefail
           if gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
             if [ "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" != "true" ]; then
-              gh release edit "$RELEASE_TAG" --draft=true
+              echo "Release $RELEASE_TAG is already published." >&2
+              exit 1
             fi
           else
             gh release create "$RELEASE_TAG" --draft --verify-tag --title "$RELEASE_TAG" --generate-notes
@@ -99,9 +102,6 @@ jobs:
           sudo apt-get install -y --no-install-recommends libarchive-tools fakeroot dpkg-dev dpkg
       - run: npm ci
       - name: Compile SvelteKit and Electron
-        env:
-          VITE_LASTFM_API_KEY: ${{ secrets.LASTFM_API_KEY }}
-          VITE_LASTFM_API_SECRET: ${{ secrets.LASTFM_API_SECRET }}
         run: npm run build
       - name: Build and upload desktop packages
         env:
@@ -135,9 +135,6 @@ jobs:
         run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
       - run: npm ci
       - name: Build and sync Android web assets
-        env:
-          VITE_LASTFM_API_KEY: ${{ secrets.LASTFM_API_KEY }}
-          VITE_LASTFM_API_SECRET: ${{ secrets.LASTFM_API_SECRET }}
         run: npm run android:sync
       - name: Restore Android signing key
         env:
@@ -169,7 +166,7 @@ jobs:
         if: always()
         run: rm -f "$RUNNER_TEMP/zeta-release.keystore"
 
-  publish-release:
+  verify-release:
     needs: [build, build-android]
     runs-on: ubuntu-latest
     permissions:
@@ -188,6 +185,8 @@ jobs:
           set -euo pipefail
           gh release view "$RELEASE_TAG" --json assets > "$RUNNER_TEMP/zeta-release-assets.json"
           node scripts/verify-release.mjs "$RUNNER_TEMP/zeta-release-assets.json"
-          if [ "$GITHUB_REPOSITORY" = 'gammadevv/z3' ]; then
-            gh release edit "$RELEASE_TAG" --draft=false --latest
-          fi
+      - name: Publish the verified fork release
+        if: ${{ github.repository == 'gammadevv/z3' && github.event_name == 'workflow_dispatch' && inputs.publish }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "$RELEASE_TAG" --draft=false --latest

@@ -1,17 +1,15 @@
 <script lang="ts">
     import { client } from '$lib/ephaptic';
-    import { duplicateSongs, formatStorage, type StorageSummary, type StoredAudio } from '$lib/library-tools';
+    import { formatStorage, type StorageSummary, type StoredAudio } from '$lib/library-tools';
     import { downloads } from '$lib/state/downloads.svelte';
     import { libraryState } from '$lib/state/library.svelte';
-    import { cache, playerState, playTrack } from '$lib/state/player.svelte';
+    import { cache, playerState } from '$lib/state/player.svelte';
     import { ui } from '$lib/state/ui.svelte';
     import { toasts } from '$lib/state/toast.svelte';
     import { isAndroid } from '$lib/platform';
 
     let inventory = $state<StorageSummary | null>(null);
     let loading = $state(false);
-    let { showDuplicates = $bindable(false) }: { showDuplicates?: boolean } = $props();
-    const duplicates = $derived(duplicateSongs(libraryState.tracks.values()));
     const total = $derived(inventory?.audio.reduce((sum, file) => sum + file.bytes, 0) ?? 0);
 
     async function refresh() {
@@ -85,32 +83,6 @@
         {/if}
     </section>
 
-    <section class="tool" id="duplicate-review" aria-labelledby="duplicate-review-title">
-        <div class="tool-head">
-            <div class="summary">
-                <h3 id="duplicate-review-title">Duplicate review</h3>
-                <p>{showDuplicates && !duplicates.length ? 'No matching titles and artists found.' : 'Compare tracks with matching titles and artists.'}</p>
-            </div>
-            <div class="buttons">
-                <button class="btn" aria-expanded={showDuplicates} onclick={() => { showDuplicates = !showDuplicates; }}>{showDuplicates ? 'Hide possible duplicates' : 'Find possible duplicates'}</button>
-            </div>
-        </div>
-        {#if showDuplicates}
-            {#each duplicates as group (group[0].id)}
-                <div class="item">
-                    <strong>{group[0].title} · {group[0].artists[0]?.name}</strong>
-                    <div class="buttons">
-                        {#each group as song (song.id)}
-                            <button class="btn" onclick={() => playTrack(song)}>
-                                {song.id.startsWith('yt:') ? 'YouTube' : song.id.startsWith('js:') ? 'JioSaavn' : 'Local'}
-                                {song.isDownloaded ? ' · Offline' : ''} {song.album?.title ? ` · ${song.album.title}` : ''}
-                            </button>
-                        {/each}
-                    </div>
-                </div>
-            {/each}
-        {/if}
-    </section>
 </div>
 
 <style>
@@ -134,7 +106,6 @@
         overflow-wrap: anywhere;
     }
     .item > .btn { flex-shrink: 0; }
-    #duplicate-review { scroll-margin-top: 84px; }
 
     @container (max-width: 650px) {
         .tool-head, .item { align-items: flex-start; flex-direction: column; }

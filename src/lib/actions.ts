@@ -3,12 +3,14 @@ import { goto } from "$app/navigation";
 import { client } from "$lib/ephaptic";
 import type { CollectionDetails, CollectionSummary, MusicProvider, Playlist, Song } from "$lib/schema";
 import { libraryState, FAVOURITES_ID } from "$lib/state/library.svelte";
-import { addToQueue, playNext, playPlaylist, playTrack, setShuffle, startRadio } from "$lib/state/player.svelte";
+import { addRadioSeed, addToQueue, isRadioContext, playNext, playPlaylist, playerState, playTrack, setShuffle, startRadio, stationDraft, snapshotRadioTracks } from "$lib/state/player.svelte";
 import { toasts } from "$lib/state/toast.svelte";
 import { ui, type MenuItem } from "$lib/state/ui.svelte";
 import { isAndroid } from '$lib/platform';
 import { splitArtistCredits } from "$lib/music-metadata";
 import { bestThumbnailUrl } from "$lib/utils";
+import { zetaTrackLink } from '$lib/track-links';
+import { recommendationExplanation } from "$lib/playlist-recommendations";
 
 export function artistHref(artist: { id?: string; name: string }, providerHint?: MusicProvider): string {
     const name = (artist.name ?? "").trim();
@@ -158,15 +160,59 @@ export async function createPlaylistWith(track?: Song) {
     return playlist;
 }
 
-export async function radioFrom(track: Song) {
-    const id = toasts.info(`Tuning in to “${track.title}” radio…`, 0);
+export function selectStationTrack(track: Song) {
+    const next = addRadioSeed(stationDraft.tracks, track);
+    if (next === stationDraft.tracks) {
+        toasts.info(stationDraft.tracks.length === 3 ? 'The station already has three seed songs.' : 'That song is already selected.');
+        return;
+    }
+    stationDraft.tracks = next;
+    toasts.success(`Added “${track.title}” to your station (${next.length}/3).`);
+}
+
+export async function playStationDraft() {
+    const selected = stationDraft.tracks;
+    if (selected.length < 2 || stationDraft.starting) return;
+    stationDraft.starting = true;
+    const id = toasts.info('Building multi-song radio…', 0);
     try {
-        await startRadio(track);
+        if (await startRadio(selected[0], false, selected.slice(1)) && stationDraft.tracks === selected) stationDraft.tracks = [];
+    } catch (error) {
+        toasts.error(error);
+    } finally {
+        stationDraft.starting = false;
+        toasts.dismiss(id);
+    }
+}
+
+export async function radioFrom(track?: Song, offline = false) {
+    const id = toasts.info(track && !offline ? `Tuning in to “${track.title}” radio…` : 'Building offline radio…', 0);
+    try {
+        await startRadio(track, offline);
     } catch (err) {
         toasts.error(err);
     } finally {
         toasts.dismiss(id);
     }
+}
+
+export function whyThisSong(track: Song) {
+    const reason = recommendationExplanation(track);
+    if (reason) toasts.info(reason, 7000);
+}
+
+export async function saveCurrentRadio() {
+    const radio = playerState.currentPlaylist;
+    if (!radio || !isRadioContext(radio)) return;
+    const tracks = snapshotRadioTracks(radio);
+    const name = await ui.prompt('Save this radio', {
+        value: radio.name, confirmLabel: 'Save playlist', message: 'Save the station’s played and upcoming tracks as a playlist.',
+    });
+    if (!name?.trim()) return;
+    try {
+        const saved = await libraryState.savePlaylist(name.trim(), tracks);
+        toasts.success(`Saved ${saved.tracks.length} tracks to “${saved.name}”.`);
+    } catch (error) { toasts.error(error); }
 }
 
 export function playlistSubmenu(track: Song): MenuItem[] {
@@ -186,6 +232,7 @@ export function playlistSubmenu(track: Song): MenuItem[] {
 export function trackMenu(track: Song, opts: { playlist?: Playlist | null; extra?: MenuItem[] } = {}): MenuItem[] {
     const fav = libraryState.isFavourite(track.id);
     const url = songUrl(track);
+    const appLink = zetaTrackLink(track.id);
     const editable = opts.playlist && opts.playlist.id !== 'music-folder' && !(isAndroid && opts.playlist.id === 'downloads') && libraryState.playlists.some((p) => p.id === opts.playlist!.id);
     const index = opts.playlist?.tracks.findIndex((song) => song.id === track.id) ?? -1;
     const move = async (delta: number) => {
@@ -225,6 +272,21 @@ export function trackMenu(track: Song, opts: { playlist?: Playlist | null; extra
         { label: "Play next", icon: "list-start", action: () => { playNext(track); toasts.success("Playing next"); } },
         { label: "Add to queue", icon: "list-end", action: () => { addToQueue(track); toasts.success("Added to queue"); } },
         { label: "Start song radio", icon: "radio", action: () => radioFrom(track) },
+        {
+            label: `Multi-song radio${stationDraft.tracks.length ? ` (${stationDraft.tracks.length}/3)` : ''}`,
+            icon: 'list-music',
+            submenu: [
+                { label: 'Use this song', icon: 'plus', action: () => selectStationTrack(track),
+                    disabled: stationDraft.tracks.length === 3 || stationDraft.tracks.some(({ id }) => id === track.id) },
+                { label: 'Start multi-song radio', icon: 'play', action: playStationDraft, disabled: stationDraft.tracks.length < 2 || stationDraft.starting },
+                ...stationDraft.tracks.map((song) => ({
+                    label: `Remove “${song.title}”`, icon: 'x',
+                    action: () => { stationDraft.tracks = stationDraft.tracks.filter(({ id }) => id !== song.id); },
+                })),
+            ],
+        },
+        { label: "Start offline radio", icon: "download", action: () => radioFrom(track, true) },
+        ...(recommendationExplanation(track) ? [{ label: "Why this song?", icon: "info", action: () => whyThisSong(track) }] : []),
         ...(artistItems.length || albumItem.length ? [{ separator: true }, ...artistItems, ...albumItem] : []),
         { separator: true },
         { label: fav ? "Remove from Favourites" : "Add to Favourites", icon: fav ? "heart-off" : "heart", action: () => libraryState.toggleFavourite(track) },
@@ -250,6 +312,15 @@ export function trackMenu(track: Song, opts: { playlist?: Playlist | null; extra
                   { label: "Copy link", icon: "link", action: () => { navigator.clipboard.writeText(url); toasts.success("Link copied"); } },
               ]
             : []),
+        ...(appLink ? [{
+            label: 'Copy Zeta link', icon: 'link-2',
+            action: async () => {
+                try {
+                    await navigator.clipboard.writeText(appLink);
+                    toasts.success('Zeta link copied.');
+                } catch (error) { toasts.error(error); }
+            },
+        }] : []),
         ...(opts.extra?.length ? [{ separator: true }, ...opts.extra] : []),
     ];
 }

@@ -14,11 +14,11 @@
         playFromContext,
         setAutoplay,
         isRadioContext,
-        startRadio,
     } from "$lib/state/player.svelte";
     import { ui } from "$lib/state/ui.svelte";
     import { liquidGlass } from "$lib/liquid-glass";
-    import { trackMenu } from "$lib/actions";
+    import { radioFrom, saveCurrentRadio, trackMenu, whyThisSong } from "$lib/actions";
+    import { recommendationExplanation } from "$lib/playlist-recommendations";
     import { artistNames, formatTime } from "$lib/utils";
     import { flip } from "svelte/animate";
     import { fly } from "svelte/transition";
@@ -66,6 +66,9 @@
         {:else}
             <span class="q-dur">{song.duration ? formatTime(song.duration) : ""}</span>
         {/if}
+        {#if recommendationExplanation(song)}
+            <button class="icon-btn sm" title="Why this song?" aria-label={`Why this song? ${song.title}`} onclick={() => whyThisSong(song)}><Icon name="info" /></button>
+        {/if}
     </div>
 {/snippet}
 
@@ -96,7 +99,12 @@
         <div class="scroll">
             {#if track}
                 <section>
-                    <h4>Now playing</h4>
+                    <div class="sec-head">
+                        <h4>Now playing</h4>
+                        {#if isRadioContext()}
+                            <button class="link" onclick={saveCurrentRadio}>Save this radio</button>
+                        {/if}
+                    </div>
                     <div class="q-row now">
                         <Cover thumbnails={track.thumbnails} title={track.title} size={48} radius="var(--r-xs)" />
                         <span class="q-text">
@@ -104,6 +112,9 @@
                             <span class="q-artist ellipsis"><ArtistLinks artists={track.artists} providerHint={track.id.startsWith("js:") ? "js" : "yt"} /></span>
                         </span>
                         <EqBars paused={playerState.paused} />
+                        {#if recommendationExplanation(track)}
+                            <button class="icon-btn sm" title="Why this song?" aria-label="Why this song?" onclick={() => whyThisSong(track)}><Icon name="info" /></button>
+                        {/if}
                     </div>
                 </section>
             {/if}
@@ -152,14 +163,18 @@
                         onclick={() => setAutoplay(!playerState.autoplay)}
                     ></button>
                 </div>
-                {#if playerState.autoplay}
+                {#if playerState.offlineRadio}
+                    <p class="hint">Playing songs available offline.</p>
+                {:else if playerState.autoplay}
                     {#if playerState.repeat === "all" && playerState.currentPlaylist && !isRadioContext()}
                         <p class="hint">Repeat is on, so “{playerState.currentPlaylist.name}” will loop. Turn repeat off to let Autoplay take over at the end.</p>
+                    {:else if playerState.autoplayExhausted && playerState.autoplaySeed}
+                        <p class="hint">No more close matches for “{playerState.autoplaySeed.title}”.</p>
                     {:else if playerState.autoplayTracks.length}
                         <p class="hint">Similar to “{playerState.autoplaySeed?.title}”, when your queue ends.</p>
                         <div role="list">
                             {#each playerState.autoplayTracks.slice(0, 10) as song (song.id)}
-                                {@render row(song, () => startRadio(song))}
+                                {@render row(song, () => radioFrom(song))}
                             {/each}
                         </div>
                     {:else}
@@ -167,6 +182,9 @@
                     {/if}
                 {:else}
                     <p class="hint">Playback stops when the queue ends.</p>
+                {/if}
+                {#if !playerState.offlineRadio}
+                    <button class="link" onclick={() => radioFrom(track ?? undefined, true)}>Start offline radio</button>
                 {/if}
             </section>
 

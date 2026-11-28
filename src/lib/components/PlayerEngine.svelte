@@ -31,6 +31,7 @@
         setShuffle,
         setRepeat,
         refreshAutoplay,
+        recordPlaybackWait,
         isRadioContext,
     } from "$lib/state/player.svelte";
     import { libraryState } from "$lib/state/library.svelte";
@@ -218,7 +219,22 @@
                 if (restoreAt !== null) playerState.paused = true;
             };
             if (cache.has(track.id)) done();
-            else loadTrack(track).then(done).catch((err) => { if (!stale) handlePlaybackFailure(track, err); });
+            else {
+                const waitingSince = performance.now();
+                const reportWait = () => {
+                    if (!track.isDownloaded && /^(yt|js):/.test(loadingId) && restoreAt === null) {
+                        recordPlaybackWait(performance.now() - waitingSince);
+                    }
+                };
+                loadTrack(track).then(() => {
+                    if (!stale) reportWait();
+                    done();
+                }).catch((err) => {
+                    if (stale) return;
+                    reportWait();
+                    handlePlaybackFailure(track, err);
+                });
+            }
         });
         return () => { stale = true; };
     });

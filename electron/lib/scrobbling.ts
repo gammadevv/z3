@@ -18,9 +18,6 @@ const service = new ScrobblingService({
         await writeFile(`${destination}.tmp`, JSON.stringify(data), { mode: 0o600 });
         await rename(`${destination}.tmp`, destination);
     },
-}, {
-    apiKey: import.meta.env.VITE_LASTFM_API_KEY || '',
-    apiSecret: import.meta.env.VITE_LASTFM_API_SECRET || '',
 });
 
 export const routes = scrobblingRoutes(service);

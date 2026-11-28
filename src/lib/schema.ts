@@ -7,6 +7,8 @@ export interface Song {
     year?: string;
     streams?: number;
     lyrics?: string | null; // if undefined then use another call to find them
+    recommendation?: 'confirmed' | 'same-artist' | 'similar-artist' | 'related' | 'up-next' | 'multiple-seeds'
+        | 'offline-album' | 'offline-artist' | 'offline-playlist' | 'offline-library';
 
     id: string;
     // Canonical source id:

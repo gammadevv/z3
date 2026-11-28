@@ -7,6 +7,7 @@ import type { Library, Song, Stream } from '../schema';
 import { androidStorage as storage, MUSIC_PATH, rememberSong, requirePlaylist, type StoredSong } from './storage';
 import * as providers from './providers';
 import { androidScrobbling } from './scrobbling';
+import { isPublicTrackId } from '../track-links';
 import { getStreamingQuality, type AudioQuality } from '../audio-quality';
 
 type LocatedSong = StoredSong & { directory: Directory };
@@ -281,6 +282,10 @@ export const androidClient: Routes = {
         return res;
     },
     musicSearchSuggestions: providers.suggestions,
+    async musicTrack(id) {
+        if (!isPublicTrackId(id)) throw new Error('Invalid Zeta track link.');
+        return (await storage.snapshot()).songs[id]?.song ?? songCache.get(id) ?? providers.track(id);
+    },
     musicLyrics: providers.lyrics,
     async musicStream(id, _encrypted, persist = true, track, quality: AudioQuality = 'best'): Promise<Stream> {
         const state = await storage.snapshot();
@@ -300,6 +305,19 @@ export const androidClient: Routes = {
         if (!trimmed) throw new Error('Enter a playlist name.');
         return storage.edit((state) => {
             const playlist = { id: `${crypto.randomUUID()}.m3u8`, name: trimmed, tracks: [], createdAt: Date.now() };
+            state.playlists.push(playlist);
+            return playlist;
+        });
+    },
+    async musicPlaylistSave(name, tracks) {
+        return storage.edit((state) => {
+            const items = [...new Map(tracks.map((track) => [track.id, track])).values()];
+            if (!items.length) throw new Error('Choose tracks to save to the playlist.');
+            const saved = items.map(({ recommendation: _reason, ...track }) => {
+                state.songs[track.id] ??= { song: { ...track, isDownloaded: false } };
+                return state.songs[track.id].song;
+            });
+            const playlist = { id: `${crypto.randomUUID()}.m3u8`, name: name.trim() || 'Untitled playlist', tracks: saved, createdAt: Date.now() };
             state.playlists.push(playlist);
             return playlist;
         });
@@ -344,10 +362,10 @@ export const androidClient: Routes = {
     async musicPlaylistUpdateThumbnail(id, thumbnail) {
         return storage.edit((state) => { const p = requirePlaylist(state, id); p.thumbnail = thumbnail; return p; });
     },
-    async musicRadio(seed, exclude = []) {
+    async musicRadio(seed, exclude = [], focused = false) {
         const data = await storage.snapshot();
         const downloaded = new Set(Object.entries(data.songs).filter(([, song]) => song.file).map(([id]) => id));
-        const songs = await providers.radio(seed, exclude, downloaded);
+        const songs = await providers.radio(seed, exclude, downloaded, focused);
         return cacheSongs(songs.map((song) => ({
             ...song,
             isDownloaded: !!data.songs[song.id]?.file,
@@ -377,6 +395,12 @@ export const androidClient: Routes = {
         }))).filter((entry) => entry !== null);
         const cached = await Filesystem.readdir({ directory: Directory.Cache, path: `${MUSIC_PATH}/audio` }).catch(() => null);
         return { audio, cacheBytes: cached?.files.reduce((sum, file) => sum + (file.size ?? 0), 0) ?? 0 };
+    },
+    async musicOfflineTracks() {
+        const { songs } = await storage.snapshot();
+        const files = (await Filesystem.readdir({ directory: Directory.Data, path: `${MUSIC_PATH}/audio` })).files;
+        const present = new Set(files.filter(({ type }) => type === 'file').map(({ name }) => `${MUSIC_PATH}/audio/${name}`));
+        return Object.values(songs).flatMap(({ song, file }) => file && present.has(file) ? [{ ...song, isDownloaded: true }] : []);
     },
     async musicRemoveDownload(id) {
         if (!/^(yt|js):/.test(id)) throw new Error('Only provider downloads can be removed here.');
@@ -408,11 +432,20 @@ export const androidClient: Routes = {
     },
     zetaExport: async (audio) => (await import('./backups')).backupRoutes.zetaExport(audio),
     zetaImport: async () => (await import('./backups')).backupRoutes.zetaImport(),
+    zetaUndoImportTime: async () => (await import('./backups')).backupRoutes.zetaUndoImportTime(),
+    zetaUndoImport: async () => (await import('./backups')).backupRoutes.zetaUndoImport(),
     muzzaExport: async () => (await import('./backups')).backupRoutes.muzzaExport(),
     muzzaImport: async () => (await import('./backups')).backupRoutes.muzzaImport(),
     muzzaExportTo: unsupported, muzzaImportFrom: unsupported,
     m3uImport: unsupported, m3uImportFrom: unsupported, spotifyPlaylistImport: unsupported,
-    spotifyPlaylistImportFrom: unsupported, youtubePlaylistImport: unsupported,
+    spotifyPlaylistImportFrom: unsupported,
+    async youtubePlaylistImport(url) {
+        const { songs } = await storage.snapshot();
+        const downloaded = new Set(Object.values(songs).filter(({ file }) => file).map(({ song }) => song.id));
+        const { name, songs: tracks, skipped } = await providers.youtubePlaylist(url, downloaded);
+        const playlist = await androidClient.musicPlaylistSave(name, tracks);
+        return { playlist, imported: tracks.length, skipped };
+    },
     async statsRecordEvent(songId, playTimeMs, timestamp = Date.now(), name) {
         if (!songId || !Number.isFinite(playTimeMs) || playTimeMs < 1000) return;
         await storage.edit((state) => {
@@ -433,6 +466,8 @@ export const androidClient: Routes = {
         return summarize(await storage.snapshot(), limit, filter);
     },
     mprisUpdate: noop, clearRPC: noop, async setRPC() { return null; }, async rpcArtwork() { return ''; },
+    async windowSetMinimizeToTray() { return false; },
+    async windowTakeTrackLink() { return null; },
     windowMinimize: noop, async windowMaximizeToggle() { return false; }, async windowIsMaximized() { return false; },
     windowClose: noop, windowResizeStart: noop, windowResizeMove: noop, windowResizeEnd: noop,
 };

@@ -70,6 +70,7 @@
 </script>
 
 <header class="titlebar" class:hidden>
+    {#if !hidden}<div class="drag-region" aria-hidden="true"></div>{/if}
     <div class="brand">
         <span class="mark">ζ</span>
         <span class="name">Zeta</span>
@@ -121,7 +122,6 @@
         height: var(--titlebar-h);
         padding: 0 calc(16px + var(--wc-right)) 0 calc(16px + var(--wc-left));
         background: linear-gradient(180deg, rgb(255 255 255 / 0.035), transparent);
-        -webkit-app-region: drag;
         transition: opacity 0.35s var(--ease-out), translate 0.35s var(--ease-out);
     }
     .titlebar.hidden {
@@ -130,7 +130,15 @@
         pointer-events: none;
         -webkit-app-region: no-drag;
     }
+    .drag-region {
+        position: absolute;
+        inset: 0 var(--wc-right) 0 var(--wc-left);
+        -webkit-app-region: drag;
+        user-select: none;
+    }
     .brand {
+        position: relative;
+        pointer-events: none;
         display: flex;
         align-items: center;
         gap: 8px;
@@ -215,12 +223,13 @@
         position: fixed;
         top: 0;
         right: 0;
-        z-index: 1300;
+        z-index: 1950;
         display: flex;
         height: var(--titlebar-h);
         -webkit-app-region: no-drag;
     }
     .wc-btn {
+        -webkit-app-region: no-drag;
         display: grid;
         place-items: center;
         width: 36px;

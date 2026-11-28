@@ -5,6 +5,8 @@
     import MediaCard from "$lib/components/MediaCard.svelte";
     import ArtistLinks from "$lib/components/ArtistLinks.svelte";
     import { client } from "$lib/ephaptic";
+    import { anniversaryWindow } from "$lib/listening-history";
+    import { onMount } from "svelte";
     import { libraryState, FAVOURITES_ID } from "$lib/state/library.svelte";
     import { playerState, playPlaylist, playTrack, togglePlay } from "$lib/state/player.svelte";
     import { statsState } from "$lib/state/stats.svelte";
@@ -12,7 +14,7 @@
     import { toasts } from "$lib/state/toast.svelte";
     import { ui } from "$lib/state/ui.svelte";
     import { collectionMenu, openPlaylist, openCollection, playCollection, radioFrom, trackMenu } from "$lib/actions";
-    import { filterPlaylistRecommendations, filterRecommendationsByArtist } from "$lib/playlist-recommendations";
+    import { filterPlaylistRecommendations, filterRecommendationsByArtist, rankRecommendationLists } from "$lib/playlist-recommendations";
     import { splitArtistCredits } from "$lib/music-metadata";
     import { formatLongDuration, slimSong } from "$lib/utils";
     import { tilt } from "$lib/tilt";
@@ -46,6 +48,33 @@
             isDownloaded: false,
         };
     }
+
+    let anniversary = $state<StatSong[]>([]);
+    let anniversaryDate = $state<Date>();
+    const anniversaryTracks = $derived(anniversary.map(toSong));
+
+    onMount(() => {
+        let active = true;
+        let loadedDay = -1;
+        const loadAnniversary = async () => {
+            const { date, from, until } = anniversaryWindow();
+            if (from === loadedDay) return;
+            loadedDay = from;
+            anniversary = [];
+            try {
+                const { topSongs } = await client.statsSummary(10, { from, until });
+                if (active && loadedDay === from) {
+                    anniversary = topSongs;
+                    anniversaryDate = date;
+                }
+            } catch {
+                if (loadedDay === from) loadedDay = -1;
+            }
+        };
+        void loadAnniversary();
+        const timer = setInterval(() => void loadAnniversary(), 60_000);
+        return () => { active = false; clearInterval(timer); };
+    });
 
     const recent = $derived.by(() => {
         const seen = new Set<string>();
@@ -206,7 +235,9 @@
             seeds.map((seed) => client.musicRadio(slimSong($state.snapshot(seed) as Song), knownIds)),
         );
         if (request === recommendationRequest) {
-            const radioSongs = radioResults.flatMap((result) => result.status === "fulfilled" ? result.value : []);
+            const radioSongs = rankRecommendationLists(radioResults.flatMap((result) =>
+                result.status === "fulfilled" ? [result.value.slice(0, 20)] : [],
+            ));
             const relatedNames = new Set(similarArtists.map((artist) => artist.name.toLowerCase()));
             const discoveryNames = [...new Set(radioSongs.flatMap((song) =>
                 splitArtistCredits(song.artists).map((credit) => credit.name),
@@ -221,7 +252,7 @@
             const artistSongs = [...similarArtists, ...discoveryArtists]
                 .flatMap((artist) => artistDetails.find((detail) => detail.name === artist.name)?.topSongs
                     ?? discoveryResults.flatMap((result) => result.status === "fulfilled" && result.value.name === artist.name ? result.value.topSongs : []));
-            const unseen = filterPlaylistRecommendations([...artistSongs, ...radioSongs], heardSongs, 100);
+            const unseen = filterPlaylistRecommendations([...radioSongs, ...artistSongs], heardSongs, 100);
             recommendations = filterRecommendationsByArtist(unseen, 20);
             recommendationsLoading = false;
             const failure = artistResults.find((result) => result.status === "rejected")
@@ -296,6 +327,32 @@
             </div>
         {/if}
     </section>
+
+    {#if anniversaryTracks.length && anniversaryDate}
+        <section class="section">
+            <div class="section-head">
+                <div>
+                    <h2 class="section-title">On this day last year</h2>
+                    <span class="section-sub">{anniversaryDate.toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' })}</span>
+                </div>
+                <button class="btn" onclick={() => playPlaylist({
+                    id: `anniversary:${anniversaryDate?.getTime()}`, name: 'On this day last year',
+                    tracks: anniversaryTracks, createdAt: anniversaryDate!.getTime(), isProtected: true,
+                }, 0)}><Icon name="play" /> Replay</button>
+            </div>
+            <div class="shelf">
+                {#each anniversaryTracks as song, i (song.id)}
+                    <MediaCard
+                        title={song.title} artists={song.artists} thumbnails={song.thumbnails} index={i}
+                        playing={playerState.currentTrack?.id === song.id} paused={playerState.paused}
+                        onclick={() => playTrack(song)}
+                        onplay={() => (playerState.currentTrack?.id === song.id ? togglePlay() : playTrack(song))}
+                        oncontextmenu={(e) => ui.openMenu(e, trackMenu(song))}
+                    />
+                {/each}
+            </div>
+        </section>
+    {/if}
 
     {#if recommendationSource}
         <section class="section discovery">

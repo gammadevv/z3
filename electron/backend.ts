@@ -25,6 +25,22 @@ interface ParentPort {
 const port = (process as unknown as { parentPort: ParentPort }).parentPort;
 
 const table = routes as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>;
+// Imports and undo touch playlists, metadata and history as one operation.
+// Let in-flight requests finish before taking or applying their checkpoint.
+const exclusiveRoutes = new Set(['zetaImportBytes', 'zetaImportFrom', 'zetaUndoImport']);
+const inFlight = new Set<Promise<void>>();
+let checkpointBarrier = Promise.resolve();
+
+function runRoute(name: string, fn: typeof table[string], args: unknown[]) {
+    const exclusive = exclusiveRoutes.has(name);
+    const ready = exclusive ? Promise.all(inFlight) : checkpointBarrier;
+    const result = ready.then(() => fn(...args));
+    const settled = result.then(() => {}, () => {});
+    if (exclusive) checkpointBarrier = settled;
+    inFlight.add(settled);
+    void settled.then(() => inFlight.delete(settled));
+    return result;
+}
 
 void managedYtDlp();
 
@@ -102,7 +118,7 @@ port.on('message', async (event) => {
         const fn = table[name];
         if (typeof fn !== 'function') throw new Error(`Unknown backend route: ${name}`);
         const started = performance.now();
-        const raw = await fn(...args);
+        const raw = await runRoute(name, fn, args);
         // The cover route is the one place bytes are meant to leave.
         const result = detachViews(name === 'musicCover' ? raw : externalizeCovers(raw));
         const worked = performance.now();

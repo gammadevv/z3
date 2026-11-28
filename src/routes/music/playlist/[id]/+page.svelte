@@ -10,7 +10,7 @@
     import { playerState, playPlaylist, togglePlay, setShuffle } from "$lib/state/player.svelte";
     import { ui } from "$lib/state/ui.svelte";
     import { artistNames, formatLongDuration, getThumbnailUrl, slimSong } from "$lib/utils";
-    import { filterPlaylistRecommendations } from "$lib/playlist-recommendations";
+    import { filterPlaylistRecommendations, rankRecommendationLists, selectPlaylistSeeds } from "$lib/playlist-recommendations";
     import type { Song } from "$lib/schema";
     import { tilt } from "$lib/tilt";
     import { isAndroid } from '$lib/platform';
@@ -112,33 +112,36 @@
     let recs = $state<Song[]>([]);
     let recsLoading = $state(false);
     let recsFor = "";
+    let recsRequest = 0;
 
     async function loadRecs() {
-        if (isDownloads || !playlist?.tracks.length) {
-            recs = [];
-            return;
-        }
+        const list = playlist;
+        if (isDownloads || !list?.tracks.length) return;
+        const request = ++recsRequest;
+        recs = [];
         recsLoading = true;
-        const seed = playlist.tracks[Math.floor(Math.random() * playlist.tracks.length)];
-        const exclude = playlist.tracks.map((t) => t.id);
-        try {
-            const out = await client.musicRadio(slimSong($state.snapshot(seed) as Song), exclude);
-            recs = filterPlaylistRecommendations(
-                out.filter((track) => !libraryState.isInPlaylist(id, track.id)),
-                playlist.tracks,
-            );
-        } catch {
-            recs = [];
-        } finally {
-            recsLoading = false;
-        }
+        const exclude = list.tracks.map(({ id }) => id);
+        const results = await Promise.allSettled(selectPlaylistSeeds(list.tracks).map((seed) =>
+            client.musicRadio(slimSong($state.snapshot(seed) as Song), exclude),
+        ));
+        if (request !== recsRequest || id !== list.id) return;
+        const ranked = rankRecommendationLists(results.flatMap((result) =>
+            result.status === "fulfilled" ? [result.value.slice(0, 12)] : [],
+        ));
+        recs = filterPlaylistRecommendations(ranked, playlist?.tracks ?? list.tracks);
+        recsLoading = false;
     }
 
     $effect(() => {
         // Once per playlist visit (and once its tracks are known).
-        if (!isDownloads && playlist && recsFor !== id && playlist.tracks.length) {
+        if (isDownloads || !playlist?.tracks.length) {
+            recsFor = "";
+            recsRequest++;
+            recs = [];
+            recsLoading = false;
+        } else if (recsFor !== id) {
             recsFor = id;
-            loadRecs();
+            void loadRecs();
         }
     });
 

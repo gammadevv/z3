@@ -301,10 +301,10 @@ class Peers {
     ) {
         const existing = this.links.find((l) => l.wayshipPeerId === remotePeerId);
         if (existing) {
-            existing.mode = mode;
             if (existing.connected) {
-                if (mode === 'backup') void this.sendBackup(existing.id).catch((err) => toasts.error(err));
-                else void this.syncLibrary(existing.id, true);
+                if (mode === 'backup') return this.sendBackup(existing.id, backupAudio);
+                existing.mode = mode;
+                void this.syncLibrary(existing.id, true);
                 return;
             }
             this.disconnect(existing.id);
@@ -355,11 +355,15 @@ class Peers {
         if (kind !== 'ice') this.log('signal handling', { id, kind, hasPayload: !!payload });
         if (kind === 'offer' && payload && typeof payload.sdp === 'string') {
             const existing = this.links.find((l) => l.id === id);
-            // If both devices were clicked at once, keep one deterministic
-            // offer instead of letting the two SDP negotiations collide.
-            if (existing?.host && localPeerId && localPeerId < remotePeerId) return;
-            if (existing) this.disconnect(id);
             const mode: PeerMode = ['backup', 'remote', 'party'].includes(payload.mode) ? payload.mode : 'remote';
+            // If both devices were clicked at once, keep one deterministic
+            // offer. An explicit backup takes priority over auto-connection.
+            if (existing?.host) {
+                if (existing.mode === 'backup' && mode !== 'backup') return;
+                const preferredBackup = mode === 'backup' && existing.mode !== 'backup';
+                if (!preferredBackup && localPeerId && localPeerId < remotePeerId) return;
+            }
+            if (existing) this.disconnect(id);
             const peer = new RTCPeerConnection({ iceServers });
             this.log('peer created for offer', { id, remotePeerId, iceServers: iceServers.map((server) => server.urls) });
             const link: Link = { id, mode, peer, host: false, connected: false, wayshipPeerId: remotePeerId, deviceName };
@@ -438,16 +442,20 @@ class Peers {
         link.peer.close();
     }
 
-    async sendBackup(id: string) {
-        const link = this.links.find((item) => item.id === id && item.host && item.mode === 'backup');
-        if (!link?.connected || !link.channel || this.progress !== null) return;
+    async sendBackup(id: string, includeAudio?: boolean) {
+        const link = this.links.find((item) => item.id === id && (item.wayshipPeerId || (item.host && item.mode === 'backup')));
+        if (!link?.connected || !link.channel) throw new Error('The receiving device is disconnected.');
+        if (this.progress !== null || this.syncing.has(id) || this.incoming) {
+            throw new Error('Wait for the current library transfer to finish before sending another backup.');
+        }
+        const withAudio = includeAudio ?? link.backupAudio ?? true;
         this.progress = 0;
         try {
             let backup;
             try {
-                backup = await client.zetaBackupBytes(link.backupAudio ?? true);
+                backup = await client.zetaBackupBytes(withAudio);
             } catch (error) {
-                if (link.backupAudio === false || !String(error).includes(BACKUP_AUDIO_LIMIT_MESSAGE)) throw error;
+                if (!withAudio || !String(error).includes(BACKUP_AUDIO_LIMIT_MESSAGE)) throw error;
                 const sendLibrary = await ui.confirm('Send a library-only backup?', {
                     message: 'The offline audio exceeds 512 MiB. Your songs, playlists, favourites, and listening history can still be transferred.',
                     confirmLabel: 'Send library backup',
@@ -542,13 +550,13 @@ class Peers {
             }
             return;
         }
-        if (link.mode === 'backup') {
-            if (link.host) return;
+        if (message.type === 'backup-start' || message.type === 'backup-end') {
+            if (!link.wayshipPeerId && (link.mode !== 'backup' || link.host)) return;
             if (message.type === 'backup-start' && !this.incoming && Number.isSafeInteger(message.size) &&
                 message.size > 0 && message.size <= MAX_BACKUP_BYTES && /^[a-f0-9]{64}$/.test(message.digest)) {
                 this.incoming = { id: link.id, bytes: new Uint8Array(message.size), offset: 0, digest: message.digest };
                 this.progress = 0;
-            } else if (message.type === 'backup-end' && this.incoming?.id === link.id) {
+            } else if (message.type === 'backup-end' && this.incoming?.id === link.id && !this.incoming.silentSync) {
                 const backup = this.incoming;
                 this.incoming = null;
                 this.progress = null;
@@ -559,6 +567,7 @@ class Peers {
             }
             return;
         }
+        if (link.mode === 'backup') return;
         if (link.host) {
             if (message.type === 'takeover') {
                 playerState.paused = true;

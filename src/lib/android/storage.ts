@@ -89,16 +89,17 @@ export class AndroidStorage {
         return structuredClone(await this.load());
     }
 
-    edit<T>(update: (library: MobileLibrary) => T): Promise<T> {
+    edit<T>(update: (library: MobileLibrary) => T | Promise<T>, afterCommit?: (result: T) => Promise<void>): Promise<T> {
         const run = async () => {
             const library = structuredClone(await this.load());
-            const result = update(library);
+            const result = await update(library);
             await this.filesystem.writeFile({
                 directory: Directory.Data, path: `${INDEX}.tmp`,
                 data: JSON.stringify(library), encoding: Encoding.UTF8,
             });
             await this.filesystem.rename({ directory: Directory.Data, from: `${INDEX}.tmp`, to: INDEX });
             this.loading = Promise.resolve(library);
+            await afterCommit?.(result);
             return structuredClone(result);
         };
         const next = this.writing.then(run, run);

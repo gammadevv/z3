@@ -11,9 +11,11 @@ import type {
     Song,
     Thumbnail,
 } from './schema.ts';
+import { isPublicTrackId } from './track-links.ts';
 import { musicText, youtubeArtists } from './music-metadata.ts';
 import { comparableText } from '../../electron/lib/lyricsfile.ts';
 import { ytSearchItems } from './youtube-search-results.ts';
+import { matchRadioSeed, rankRadioTracks } from './playlist-recommendations.ts';
 
 export { ytSearchItems } from './youtube-search-results.ts';
 
@@ -23,6 +25,26 @@ type YtMusicLike = {
     getAlbum(browseId: string): Promise<any>;
     getPlaylist(browseId: string): Promise<any>;
 };
+
+type YoutubeTrackInfo = {
+    basic_info: { title?: string; author?: string; duration?: number; thumbnail?: Thumbnail[] };
+};
+
+export async function fetchTrackById(id: string, youtube: (videoId: string) => Promise<YoutubeTrackInfo>): Promise<Song> {
+    if (!isPublicTrackId(id)) throw new Error('Invalid Zeta track link.');
+    if (id.startsWith('js:')) {
+        const song = (await SaavnSong.getById({ songIds: id.slice(3) })).songs?.find((item) => `js:${item.id}` === id);
+        if (!song) throw new Error('This JioSaavn track is unavailable.');
+        return saavnToSong(song, new Set());
+    }
+    const { basic_info: info } = await youtube(id.slice(3));
+    if (!info.title) throw new Error('This YouTube track is unavailable.');
+    return {
+        id, title: info.title, artists: [{ name: info.author || 'Unknown Artist', thumbnails: [] }],
+        thumbnails: info.thumbnail?.map(({ url, width, height }) => ({ url, width, height })) ?? [],
+        album: null, duration: info.duration ?? 0, isDownloaded: false,
+    };
+}
 
 export function saavnImages(list: { url: string; resolution?: string }[] | undefined): Thumbnail[] {
     return (list ?? []).map((i) => {
@@ -130,6 +152,97 @@ export function ytToSong(
         duration: item.duration?.seconds || 0,
         isDownloaded: downloaded.has(id),
     };
+}
+
+type RadioMusic = Pick<YtMusicLike, 'search'> & {
+    getUpNext(videoId: string, automix?: boolean): Promise<{ contents?: any[] }>;
+    getRelated(videoId: string): Promise<unknown>;
+};
+
+interface RadioRelated { tracks: Song[]; artists: Artist[] }
+const radioRelated = new Map<string, { until: number; data: RadioRelated }>();
+
+async function fetchRadioRelated(yt: RadioMusic, videoId: string): Promise<RadioRelated> {
+    const cached = radioRelated.get(videoId);
+    if (cached && cached.until > Date.now()) return cached.data;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+        // Related is a second signal. A slow or missing shelf should not block the player.
+        const page = await Promise.race([
+            yt.getRelated(videoId),
+            new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), 3500); }),
+        ]) as { contents?: any[] } | null;
+        const shelves = Array.isArray(page?.contents) ? page.contents : [];
+        const suggestions = shelves.find((shelf) => /you might also like|similar songs/i.test(shelf.header?.title?.toString?.() ?? ''))
+            ?? shelves[0];
+        const downloaded = new Set<string>();
+        const tracks = (suggestions?.contents ?? []).flatMap((item: any) => {
+            if (item.item_type !== 'song') return [];
+            const track = ytToSong(item, downloaded);
+            return track ? [track] : [];
+        });
+        const artists = shelves.flatMap((shelf) => (shelf.contents ?? []).flatMap((item: any) => {
+            if (item.item_type !== 'artist') return [];
+            const name = musicText(item.title?.toString?.() ?? item.name ?? '').trim();
+            const id = item.id || item.endpoint?.payload?.browseId;
+            return name ? [{ id: id ? `yt:${id}` : undefined, name, thumbnails: [] }] : [];
+        }));
+        const data = { tracks, artists };
+        if (radioRelated.size >= 32) radioRelated.delete(radioRelated.keys().next().value!);
+        if (tracks.length || artists.length) radioRelated.set(videoId, { until: Date.now() + 10 * 60_000, data });
+        return data;
+    } catch {
+        return { tracks: [], artists: [] };
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+export async function fetchSongRadio(
+    getYt: () => Promise<RadioMusic>, downloaded: Set<string>, seed: Song, exclude: string[], focused: boolean,
+): Promise<Song[]> {
+    const omitted = new Set([seed.id, ...exclude]);
+    if (seed.id.startsWith('js:')) {
+        try {
+            const recommendations = await SaavnSong.getRecommendations({ songId: seed.id.slice(3) });
+            const tracks = (recommendations ?? []).map((song) => saavnToSong(song, downloaded));
+            const results = focused ? rankRadioTracks(seed, tracks, [], [], exclude) : tracks.filter(({ id }) => !omitted.has(id));
+            if (results.length) return results;
+        } catch (error) {
+            console.warn('[radio] JioSaavn recommendations failed, falling back to YouTube Music:', error);
+        }
+    }
+
+    const yt = await getYt();
+    let videoId = seed.id.startsWith('yt:') ? seed.id.slice(3) : undefined;
+    if (!videoId) {
+        const query = `${seed.title} ${seed.artists.map(({ name }) => name).join(' ')}`.trim();
+        const result = await yt.search(query, { type: 'song' });
+        const candidates = ytSearchItems(result, 'song', 'songs').map((item) => ytToSong(item, downloaded))
+            .filter((track): track is Song => track !== null);
+        videoId = matchRadioSeed(seed, candidates)?.id.slice(3);
+    }
+    if (!videoId) return [];
+    omitted.add(`yt:${videoId}`);
+
+    const emptyRelated: RadioRelated = { tracks: [], artists: [] };
+    const [queue, extra] = await Promise.allSettled([
+        yt.getUpNext(videoId, true),
+        focused ? fetchRadioRelated(yt, videoId) : emptyRelated,
+    ]);
+    const related = extra.status === 'fulfilled' ? extra.value : emptyRelated;
+    if (queue.status === 'rejected' && !related.tracks.length) throw queue.reason;
+    const panel = queue.status === 'fulfilled' ? queue.value : null;
+    const tracks = (panel?.contents ?? []).flatMap((item) => {
+        const video = item?.video_id ? item : item?.primary ?? item?.content;
+        if (!video?.video_id || video.video_id === videoId) return [];
+        const author = typeof video.author === 'string' && video.author.trim() ? [{ name: video.author, thumbnails: [] }] : [];
+        const track = ytToSong({ ...video, id: video.video_id }, downloaded, { artists: author });
+        return track ? [track] : [];
+    });
+    if (!focused) return tracks.filter(({ id }) => !omitted.has(id));
+    return rankRadioTracks(seed, tracks, related.tracks, related.artists, [...omitted])
+        .map((track) => ({ ...track, isDownloaded: downloaded.has(track.id) }));
 }
 
 function ytItemToCollection(item: any, kindHint: CollectionKind, fallbackArtists: Artist[] = []): CollectionSummary | null {

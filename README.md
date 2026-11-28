@@ -87,7 +87,10 @@ installer. Android may ask you to allow installs from Zeta first.
 **Settings → Zeta backup** saves a `.zetabackup` file on desktop or Android.
 Import it on the other device to merge songs, playlists, favourites, and listening
 history. Include downloaded audio if it fits within the 128 MiB backup limit.
-The backup excludes account credentials and browser cookies.
+The backup excludes account credentials and browser cookies. The Library
+snapshots panel keeps three daily, library-only backups on the device. You can
+also make one on demand and preview it before merging. Undo last Zeta import
+returns to the pre-import library and checks for later edits before proceeding.
 
 **Settings → Nearby devices** pairs devices on the same Wi-Fi for direct backup
 transfer, playback control, and listening parties. Scan the invitation on the
@@ -116,11 +119,10 @@ Failed listens stay in a local queue and retry at startup, when the network retu
 and once a minute. Successful delivery to one service is not repeated when the
 other service needs a retry. Now-playing updates are never put in the offline queue.
 
-Developers can configure Last.fm application credentials in an ignored `.env.local`
-using the names in `.env.example`. Build-time application credentials are included
-in the local app build; account sessions and ListenBrainz tokens are kept in private
-application settings and are not exposed by the settings-status API. Do not commit
-real credentials or distribute your own local build credentials unintentionally.
+For Last.fm, create an [API account](https://www.last.fm/api/account/create), then
+save its API key and shared secret in **Settings → Scrobbling** before connecting.
+Zeta stores these credentials, account sessions, and ListenBrainz tokens in private
+settings on each device.
 
 ## Zeta for Discord
 
@@ -133,16 +135,16 @@ See the [bot setup guide](bot/README.md) for installation and commands.
 ## Publishing a release
 
 The tag workflow builds Windows, macOS (Apple Silicon and Intel), Linux, and a
-signed Android APK. Set repository Actions secrets `LASTFM_API_KEY`,
-`LASTFM_API_SECRET`, `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`,
-`ANDROID_KEY_ALIAS`, and `ANDROID_KEY_PASSWORD`. The first two are mapped to Vite's
-build-time variable names. Signing material is restored temporarily for the
-Android job and removed afterward.
+signed Android APK. Set repository Actions secrets `ANDROID_KEYSTORE_BASE64`,
+`ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, and `ANDROID_KEY_PASSWORD`.
+The Android build restores the signing material temporarily.
 
 Update `package.json`, `package-lock.json`, and Android's `versionName` together,
 increment Android's `versionCode`, and push a matching `v` tag. Release notes live
-in `releases/<tag>.md`. All packages upload into a draft; publication waits for
-all desktop assets, updater metadata/blockmaps, and the signed Android APK.
+in `releases/<tag>.md`. The workflow verifies the desktop packages, updater
+metadata, and signed Android APK in the draft. Publish the draft after testing
+the installers, or select **Publish the verified draft immediately** when
+dispatching the fork's release workflow.
 
 ## Checks
 

@@ -7,6 +7,7 @@ export type SidePanel = "queue" | "lyrics" | null;
 const PREFS_KEY = "zeta:ui-prefs";
 
 interface UiPrefs {
+    minimizeToTray: boolean;
     lite: boolean;
     ambient: boolean;
     liquidGlass: boolean;
@@ -50,6 +51,7 @@ interface DialogRequest {
 class UiStore {
     private prefs = loadPrefs();
 
+    minimizeToTray = $state(this.prefs.minimizeToTray === true);
     nowPlayingOpen = $state(false);
     nowPlayingMode = $state<NowPlayingMode>("lyrics");
     sidePanel = $state<SidePanel>(this.prefs.sidePanel ?? null);
@@ -78,6 +80,7 @@ class UiStore {
     save() {
         if (!browser) return;
         const prefs: UiPrefs = {
+            minimizeToTray: this.minimizeToTray,
             lite: this.lite,
             ambient: this.ambient,
             liquidGlass: this.liquidGlass,

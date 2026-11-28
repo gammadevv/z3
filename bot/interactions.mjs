@@ -4,11 +4,11 @@ import {
 } from 'discord.js';
 import { transport } from './commands.mjs';
 import { periods, profileUrl, services } from './scrobbling.mjs';
-import { BotError, wayshipConnectUrl } from './wayship.mjs';
+import { BotError, matchDevices, wayshipConnectUrl } from './wayship.mjs';
 
 const CONNECT_BUTTON = 'zeta:wayship:open';
 const CONNECT_MODAL = 'zeta:wayship:connect';
-const PRIVATE_COMMANDS = new Set(['wayship', 'link', 'unlink', 'profile', 'devices']);
+const PRIVATE_COMMANDS = new Set(['wayship', 'link', 'unlink', 'profile', 'devices', 'defaultdevice']);
 const ACCENT = 0x8c79e8;
 const ERROR = 0xdb6375;
 const clean = (input, limit = 150) => escapeMarkdown(String(input ?? '').replace(/\s+/g, ' ').trim().slice(0, limit));
@@ -44,13 +44,15 @@ function trackCard(title, track, context) {
     };
 }
 
-function replyOptions(interaction, { title, description, color = ACCENT, files, components, thumbnail }) {
+function replyOptions(interaction, { title, description, color = ACCENT, files, components, thumbnail, image }) {
     const options = { allowedMentions: { parse: [] }, files, components };
     if (canEmbed(interaction)) {
         const embed = new EmbedBuilder().setTitle(title.slice(0, 256)).setColor(color);
         if (description) embed.setDescription(description.slice(0, 4096));
         const cover = secureUrl(thumbnail);
-        if (cover) embed.setThumbnail(cover);
+        const artwork = secureUrl(image);
+        if (artwork) embed.setImage(artwork);
+        else if (cover) embed.setThumbnail(cover);
         return { ...options, embeds: [embed] };
     }
     return { ...options, content: [`**${title}**`, description].filter(Boolean).join('\n').slice(0, 2000),
@@ -94,11 +96,24 @@ function tokenModal() {
         .addLabelComponents(new LabelBuilder().setLabel('New Wayship app token').setTextInputComponent(token));
 }
 
-function playbackLabel({ name, result: { playback } }) {
+function playbackLabel({ name, result: { playback } }, shareCard = false) {
     if (!playback.track) return card('Nothing playing', `No track is loaded on **${clean(name)}**.`);
     const verb = { playing: 'Now playing', paused: 'Paused', loading: 'Loading' }[playback.phase] ?? 'Current track';
+    if (shareCard) {
+        const duration = playback.duration || playback.track.duration || 0;
+        const position = duration > 0 ? Math.min(duration, Math.max(0, playback.position)) : 0;
+        const marks = duration > 0 ? Math.floor(12 * position / duration) : 0;
+        const progress = duration > 0
+            ? `\`${'━'.repeat(marks)}${'─'.repeat(12 - marks)}\` ${clock(position)} / ${clock(duration)}`
+            : '';
+        return asShareCard(trackCard(verb, playback.track, progress));
+    }
     const time = playback.duration > 0 ? ` · ${clock(playback.position)} / ${clock(playback.duration)}` : '';
     return trackCard(verb, playback.track, `Zeta · ${clean(name)}${time}`);
+}
+
+function asShareCard(response) {
+    return { ...response, image: response.thumbnail, color: 0x6fe2aa };
 }
 
 function pickService(profile, requested) {
@@ -109,8 +124,8 @@ function pickService(profile, requested) {
 
 function help() {
     return card('Zeta for Discord', [
-        '**Connect** · /wayship, /link, /unlink, /profile, /devices',
-        '**Listening** · /playing, /recent, /toptracks, /topartists, /album, /lyrics',
+        '**Connect** · /wayship, /link, /unlink, /profile, /devices, /defaultdevice',
+        '**Listening** · /playing, /nowplaying, /recent, /toptracks, /topartists, /album, /lyrics',
         '**Player** · /play, /playnext, /enqueue, /queue, /skip, /previous, /pause, /unpause, /seek, /volume',
         '**Server voice** · /join, /leave',
         '',
@@ -119,7 +134,7 @@ function help() {
 }
 
 export function interactions({ accounts, scrobbling, wayship, voice }) {
-    async function playing(profile, requested, device) {
+    async function playing(profile, requested, device, shareCard) {
         if (requested && device) throw new BotError('Choose a listening service or a Zeta device.');
         const lookups = (requested ? [pickService(profile, requested)] : Object.keys(services).filter((key) => profile[key]))
             .map((service) => scrobbling.recent(service, profile[service], 1, true)
@@ -136,19 +151,23 @@ export function interactions({ accounts, scrobbling, wayship, voice }) {
             }
         }
         if (device && wayshipError) throw wayshipError;
-        if (zeta?.result.playback.track && (device || zeta.result.playback.phase !== 'paused')) return playbackLabel(zeta);
+        if (zeta?.result.playback.track && (device || zeta.result.playback.phase !== 'paused')) return playbackLabel(zeta, shareCard);
 
         const history = await scrobbles;
         const items = history.flatMap((entry) => entry.status === 'fulfilled' ? entry.value : []);
         const active = items.find(({ playing }) => playing);
-        if (active) return trackCard('Now playing', active, services[active.service]);
-        if (zeta?.result.playback.track) return playbackLabel(zeta);
+        if (active) {
+            const response = trackCard('Now playing', active, services[active.service]);
+            return shareCard ? asShareCard(response) : response;
+        }
+        if (zeta?.result.playback.track) return playbackLabel(zeta, shareCard);
         const latest = items.sort((a, b) => b.time - a.time)[0];
         if (latest) {
             const time = latest.time > 0 && latest.time < 10_000_000_000 ? ` · <t:${Math.floor(latest.time)}:R>` : '';
-            return trackCard('Last played', latest, `${services[latest.service]}${time}`);
+            const response = trackCard('Last played', latest, `${services[latest.service]}${time}`);
+            return shareCard ? asShareCard(response) : response;
         }
-        if (zeta) return playbackLabel(zeta);
+        if (zeta) return playbackLabel(zeta, shareCard);
         if (requested && history[0]?.status === 'rejected') throw history[0].reason;
         if (wayshipError) throw wayshipError;
         if (!lookups.length) throw new BotError('Connect Zeta with /wayship or link a listening profile with /link.');
@@ -160,7 +179,7 @@ export function interactions({ accounts, scrobbling, wayship, voice }) {
         const { commandName, options, user } = interaction;
         const requested = options.getString('service');
         const device = options.getString('device');
-        const targetDevice = device || (!requested ? voice?.deviceFor(interaction) : undefined);
+        const targetDevice = device || (!requested ? voice?.deviceFor(interaction) || profile.defaultDevice?.id : undefined);
         const token = profile.wayship?.token;
 
         switch (commandName) {
@@ -184,12 +203,16 @@ export function interactions({ accounts, scrobbling, wayship, voice }) {
             case 'unlink':
                 if (!profile[requested]) return card('Already disconnected', 'There is no saved connection for this service.');
                 accounts.set(user.id, requested, null);
-                if (requested === 'wayship') voice?.stopFor(user.id);
+                if (requested === 'wayship') {
+                    voice?.stopFor(user.id);
+                    accounts.set(user.id, 'defaultDevice', null);
+                }
                 return card('Connection removed', requested === 'wayship'
                     ? 'Wayship connection removed. You can revoke the Discord Bot connection from Wayship’s Connected apps page.'
                     : `${services[requested]} profile removed.`);
             case 'playing':
-                return playing(profile, requested, targetDevice);
+            case 'nowplaying':
+                return playing(profile, requested, targetDevice, commandName === 'nowplaying');
             case 'album': {
                 const song = options.getString('song')?.trim();
                 const { result: { track, album } } = await wayship.run(token, {
@@ -230,13 +253,28 @@ export function interactions({ accounts, scrobbling, wayship, voice }) {
                 const lines = numberList(items, (track) => `${trackLabel(track, 65)} · ${Number(track.count) || 0} plays`);
                 return card(`Top ${kind} · ${periods[period].name} · ${services[service]}`, lines || 'No top-list data for that period yet.');
             }
+            case 'defaultdevice': {
+                const clear = options.getBoolean('clear');
+                if (clear && device) throw new BotError('Choose a device or clear the default.');
+                if (clear) {
+                    accounts.set(user.id, 'defaultDevice', null);
+                    return card('Default device cleared', 'Zeta will pick an available player automatically.');
+                }
+                if (!device) return profile.defaultDevice
+                    ? card('Default Zeta device', `**${clean(profile.defaultDevice.name)}** · \`${profile.defaultDevice.id}\``)
+                    : card('No default device', 'Run /devices for an ID, then select it with /defaultdevice.');
+                const [selected] = matchDevices(await wayship.devices(token), device);
+                accounts.set(user.id, 'defaultDevice', { id: selected.id, name: selected.name });
+                return card('Default device saved', `Commands will use **${clean(selected.name)}** unless you choose another device or join voice.`);
+            }
             case 'devices': {
                 const devices = await wayship.devices(token);
                 if (!devices.length) return card('No online devices', 'Open Zeta and connect to Wayship.');
-                const lines = devices.slice(0, 8).map(({ id, name, playback }) => {
+                const lines = devices.slice(0, 8).map(({ id, name, platform, playback }) => {
                     const status = playback?.phase ?? 'no reply';
+                    const deviceType = platform === 'android' ? ' · Android' : '';
                     const role = playback && !playback.controllable ? ' · following another player' : '';
-                    return `**${clean(name, 60)}** · ${status}${role}\n\`${id}\``;
+                    return `**${clean(name, 60)}**${deviceType} · ${status}${role}\n\`${id}\``;
                 });
                 if (devices.length > 8) lines.push(`…and ${devices.length - 8} more. Select by device name.`);
                 return card('Your Zeta devices', lines.join('\n'));

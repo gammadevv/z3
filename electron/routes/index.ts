@@ -1,4 +1,7 @@
-import { BrowserWindow, dialog, screen } from 'electron';
+import { app, BrowserWindow, dialog, screen } from 'electron';
+import { resolve } from 'node:path';
+import { takeTrackLink } from '../lib/track-links';
+import { minimizeWindow, setTrayMinimize } from '../lib/window-tray';
 import { readFile, stat } from 'node:fs/promises';
 import { MAX_BACKUP_BYTES } from '../../src/lib/zeta-backup';
 
@@ -19,11 +22,12 @@ import { Client, type SetActivity, type SetActivityResponse } from '@xhayper/dis
 type Music = typeof MusicRoutes;
 
 const MUSIC_ROUTES = [
-    'scrobbleStatus', 'scrobbleTaste', 'scrobbleSimilarArtists', 'scrobbleLastfmStart', 'scrobbleLastfmFinish', 'scrobbleListenbrainzConnect',
+    'scrobbleStatus', 'scrobbleTaste', 'scrobbleSimilarArtists', 'scrobbleConfigureLastfm', 'scrobbleLastfmStart', 'scrobbleLastfmFinish', 'scrobbleListenbrainzConnect',
     'scrobbleSetEnabled', 'scrobbleDisconnect', 'scrobbleNowPlaying', 'scrobbleSubmit', 'scrobbleRetry',
     'musicLyrics',
     'musicSearchSuggestions',
     'musicSearch',
+    'musicTrack',
     'musicSearchExtras',
     'musicSearchPlaylists',
     'musicSearchAlbums',
@@ -34,12 +38,16 @@ const MUSIC_ROUTES = [
     'musicCollection',
     'musicStream',
     'musicStorage',
+    'musicOfflineTracks',
     'musicRemoveDownload',
     'musicClearCache',
     'zetaBackupBytes',
     'zetaImportBytes',
+    'zetaUndoImportTime',
+    'zetaUndoImport',
     'musicLoadLibrary',
     'musicPlaylistCreate',
+    'musicPlaylistSave',
     'musicPlaylistRename',
     'musicPlaylistDelete',
     'musicPlaylistReorder',
@@ -214,8 +222,14 @@ let resizing: { edge: string; from: ReturnType<BrowserWindow['getBounds']>; star
     null;
 
 const windowChrome = {
+    async windowSetMinimizeToTray(enabled: boolean): Promise<boolean> {
+        return setTrayMinimize(enabled === true, resolve(app.getAppPath(), process.env.VITE_DEV_SERVER_URL ? 'static/zeta.png' : 'build/zeta.png'));
+    },
+    async windowTakeTrackLink(): Promise<string | null> {
+        return takeTrackLink();
+    },
     async windowMinimize(): Promise<void> {
-        appWindow()?.minimize();
+        minimizeWindow(appWindow());
     },
     async windowMaximizeToggle(): Promise<boolean> {
         const win = appWindow();

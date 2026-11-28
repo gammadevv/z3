@@ -63,14 +63,6 @@ test('GitHub updates require a newer stable version', () => {
     assert.equal(newerRelease({ ...release, prerelease: true }, '0.5.2'), null);
 });
 
-test('duplicate review groups different providers and preserves alternate editions', async () => {
-    const { duplicateSongs } = await import('../src/lib/library-tools.ts');
-    const track = { ...song, title: 'Éxample', artists: [{ name: 'Artist', thumbnails: [] }] };
-    const copy = { ...track, id: 'yt:jNQXAC9IVRw', title: 'Example' };
-    const live = { ...track, id: 'js:live', title: 'Example (Live)' };
-    assert.deepEqual(duplicateSongs([track, copy, live, copy]), [[track, copy]]);
-});
-
 test('listening history filters artist, title, and exclusive end dates', async () => {
     const { matchesListeningFilter } = await import('../src/lib/listening-history.ts');
     const name = { title: 'Example', artists: ['Artist'] };

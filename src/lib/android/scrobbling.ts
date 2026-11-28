@@ -16,6 +16,6 @@ const service = new ScrobblingService({
         await Filesystem.writeFile({ directory: Directory.Data, path: `${PATH}.tmp`, encoding: Encoding.UTF8, data: JSON.stringify(data), recursive: true });
         await Filesystem.rename({ directory: Directory.Data, from: `${PATH}.tmp`, to: PATH });
     },
-}, { apiKey: import.meta.env.VITE_LASTFM_API_KEY || '', apiSecret: import.meta.env.VITE_LASTFM_API_SECRET || '' });
+});
 
 export const androidScrobbling = scrobblingRoutes(service);
