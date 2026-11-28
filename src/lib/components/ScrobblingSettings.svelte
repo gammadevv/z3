@@ -7,9 +7,6 @@
 
     let status = $state<Awaited<ReturnType<typeof client.scrobbleStatus>> | null>(null);
     let token = $state('');
-    let lastfmKey = $state('');
-    let lastfmSecret = $state('');
-    let editingLastfm = $state(false);
     let busy = $state(false);
 
     async function load() { status = await client.scrobbleStatus(); }
@@ -18,11 +15,6 @@
         try { await action(); await load(); }
         catch (error) { toasts.error(error); }
         finally { busy = false; }
-    }
-    async function configureLastfm() {
-        await client.scrobbleConfigureLastfm(lastfmKey, lastfmSecret);
-        lastfmKey = lastfmSecret = '';
-        editingLastfm = false;
     }
     async function connectLastfm() {
         const url = await client.scrobbleLastfmStart();
@@ -38,21 +30,7 @@
     <p class="intro muted">Connect your accounts to send now-playing updates and listening history. A listen counts after half a song or four minutes, for songs longer than 30 seconds. Offline listens wait here until you reconnect.</p>
     <div class="card account">
         <div class="account-head"><strong>Last.fm</strong><span class="badge">{status?.lastfm.connected ? status.lastfm.username : 'Not connected'}</span></div>
-        {#if status && (!status.lastfm.configured || editingLastfm)}
-            <p class="muted">Enter the API key and shared secret for your Last.fm API account. Zeta saves them on this device.</p>
-            <label for="lastfm-api-key">API key</label>
-            <input id="lastfm-api-key" class="input" autocomplete="off" spellcheck="false" maxlength="64" bind:value={lastfmKey} disabled={busy} />
-            <label for="lastfm-api-secret">Shared secret</label>
-            <input id="lastfm-api-secret" class="input" type="password" autocomplete="off" maxlength="64" bind:value={lastfmSecret} disabled={busy} />
-            <div class="buttons">
-                <button class="btn btn-primary" disabled={busy || !lastfmKey.trim() || !lastfmSecret.trim()}
-                    onclick={() => run(configureLastfm)}>Save credentials</button>
-                <button class="btn" disabled={busy} onclick={() => run(() => client.openScrobblingLink('https://www.last.fm/api/account/create'))}>
-                    <Icon name="external-link" /> Get API credentials
-                </button>
-                {#if editingLastfm}<button class="btn" onclick={() => { editingLastfm = false; lastfmKey = lastfmSecret = ''; }}>Cancel</button>{/if}
-            </div>
-        {:else if status?.lastfm.connected}
+        {#if status?.lastfm.connected}
             <div class="toggle-row">
                 <span>Scrobble to Last.fm</span>
                 <button class="switch" role="switch" aria-label="Scrobble to Last.fm" aria-checked={status.lastfm.enabled} disabled={busy}
@@ -68,9 +46,7 @@
         {:else}
             <p class="muted">Authorize Zeta in Last.fm. Your password stays in your browser.</p>
             <button class="btn" disabled={busy || !status?.lastfm.configured} onclick={() => run(connectLastfm)}><Icon name="external-link" /> Connect Last.fm</button>
-        {/if}
-        {#if status?.lastfm.configured && !editingLastfm}
-            <button class="btn" disabled={busy} onclick={() => (editingLastfm = true)}>Change API credentials</button>
+            {#if status && !status.lastfm.configured}<small class="subtle">Last.fm is not configured in this build.</small>{/if}
         {/if}
         {#if status?.lastfm.queued}<small class="subtle">{status.lastfm.queued} listens waiting to sync</small>{/if}
         {#if status?.lastfm.error}<p class="error" role="status">{status.lastfm.error}</p>{/if}

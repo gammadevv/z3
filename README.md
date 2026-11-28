@@ -119,10 +119,9 @@ Failed listens stay in a local queue and retry at startup, when the network retu
 and once a minute. Successful delivery to one service is not repeated when the
 other service needs a retry. Now-playing updates are never put in the offline queue.
 
-For Last.fm, create an [API account](https://www.last.fm/api/account/create), then
-save its API key and shared secret in **Settings → Scrobbling** before connecting.
-Zeta stores these credentials, account sessions, and ListenBrainz tokens in private
-settings on each device.
+The official release includes the Last.fm application configuration. Open
+**Settings → Scrobbling → Connect Last.fm** to authorize your account. Zeta
+keeps account sessions and ListenBrainz tokens in private settings on each device.
 
 ## Zeta for Discord
 
@@ -135,9 +134,11 @@ See the [bot setup guide](bot/README.md) for installation and commands.
 ## Publishing a release
 
 The tag workflow builds Windows, macOS (Apple Silicon and Intel), Linux, and a
-signed Android APK. Set repository Actions secrets `ANDROID_KEYSTORE_BASE64`,
-`ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, and `ANDROID_KEY_PASSWORD`.
-The Android build restores the signing material temporarily.
+signed Android APK. Set the repository Actions variable `LASTFM_API_KEY` and
+the Actions secret `LASTFM_API_SECRET` for the Last.fm application. Set the
+Android signing secrets `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`,
+`ANDROID_KEY_ALIAS`, and `ANDROID_KEY_PASSWORD`. The Android build restores
+the signing material temporarily.
 
 Update `package.json`, `package-lock.json`, and Android's `versionName` together,
 increment Android's `versionCode`, and push a matching `v` tag. Release notes live

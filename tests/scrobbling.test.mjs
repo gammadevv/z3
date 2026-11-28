@@ -193,34 +193,3 @@ test('invalid sessions pause that service and retain queued listens for reconnec
     await app.service.retry();
     assert.equal(calls, 1);
 });
-
-test('Last.fm credentials can be configured per device without appearing in status', async () => {
-    let saved = emptyScrobbles();
-    const apiKey = 'a'.repeat(32);
-    const apiSecret = 'b'.repeat(32);
-    const requests = [];
-    const storage = {
-        async read() { return structuredClone(saved); },
-        async write(data) { saved = structuredClone(data); },
-    };
-    const request = async (_url, options) => {
-        const params = new URLSearchParams(options.body);
-        requests.push(params);
-        return params.get('method') === 'auth.getToken'
-            ? Response.json({ token: 'pending' })
-            : Response.json({ session: { name: 'tester', key: 'private-session' } });
-    };
-    const service = new ScrobblingService(storage, undefined, request);
-    assert.equal((await service.status()).lastfm.configured, false);
-    await assert.rejects(service.configureLastfm(apiKey, 'bad'), /32-character/);
-    await service.configureLastfm(apiKey, apiSecret);
-    const restarted = new ScrobblingService(storage, undefined, request);
-    assert.equal((await restarted.status()).lastfm.configured, true);
-    assert.equal(new URL(await restarted.startLastfm()).searchParams.get('api_key'), apiKey);
-    await restarted.finishLastfm();
-    assert.ok(requests.every((params) => params.get('api_key') === apiKey && params.has('api_sig')));
-    assert.equal((await restarted.status()).lastfm.connected, true);
-    assert.doesNotMatch(JSON.stringify(await restarted.status()), new RegExp(apiKey + '|' + apiSecret + '|private-session'));
-    await restarted.configureLastfm('c'.repeat(32), 'd'.repeat(32));
-    assert.equal((await restarted.status()).lastfm.connected, false);
-});

@@ -36,6 +36,9 @@ jobs:
           node-version: 24
           cache: npm
       - name: Verify release version
+        env:
+          VITE_LASTFM_API_KEY: ${{ vars.LASTFM_API_KEY || secrets.LASTFM_API_KEY }}
+          VITE_LASTFM_API_SECRET: ${{ secrets.LASTFM_API_SECRET }}
         run: |
           node --input-type=module <<'JS'
           import { readFileSync } from 'node:fs';
@@ -44,6 +47,10 @@ jobs:
           const gradle = readFileSync('android/app/build.gradle', 'utf8');
           if (!gradle.includes(`versionName "${version}"`)) throw new Error('Android version must match the release.');
           if (!/^\s*versionCode\s+\d+\s*$/m.test(gradle)) throw new Error('Android version code is missing.');
+          if (['gammadevv/z3', 'zeta-zx/z3'].includes(process.env.GITHUB_REPOSITORY) &&
+              (!process.env.VITE_LASTFM_API_KEY || !process.env.VITE_LASTFM_API_SECRET)) {
+            throw new Error('Configure the Last.fm Actions variable and secret before building the release.');
+          }
           JS
       - run: npm ci
       - run: npm run check
@@ -102,6 +109,9 @@ jobs:
           sudo apt-get install -y --no-install-recommends libarchive-tools fakeroot dpkg-dev dpkg
       - run: npm ci
       - name: Compile SvelteKit and Electron
+        env:
+          VITE_LASTFM_API_KEY: ${{ vars.LASTFM_API_KEY || secrets.LASTFM_API_KEY }}
+          VITE_LASTFM_API_SECRET: ${{ secrets.LASTFM_API_SECRET }}
         run: npm run build
       - name: Build and upload desktop packages
         env:
@@ -135,6 +145,9 @@ jobs:
         run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
       - run: npm ci
       - name: Build and sync Android web assets
+        env:
+          VITE_LASTFM_API_KEY: ${{ vars.LASTFM_API_KEY || secrets.LASTFM_API_KEY }}
+          VITE_LASTFM_API_SECRET: ${{ secrets.LASTFM_API_SECRET }}
         run: npm run android:sync
       - name: Restore Android signing key
         env:

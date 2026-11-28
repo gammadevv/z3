@@ -16,7 +16,6 @@ interface PendingListen {
 export interface ScrobbleData {
     version: 1;
     lastfm: Account & { sessionKey?: string; pendingToken?: string };
-    lastfmCredentials?: LastfmCredentials;
     listenbrainz: Account & { token?: string };
     queue: PendingListen[];
 }
@@ -55,10 +54,7 @@ export class ScrobblingService {
     private writes: Promise<unknown> = Promise.resolve();
     private flushing?: Promise<void>;
 
-    constructor(
-        storage: ScrobbleStorage, credentials: LastfmCredentials = { apiKey: '', apiSecret: '' },
-        request: typeof fetch = fetch,
-    ) {
+    constructor(storage: ScrobbleStorage, credentials: LastfmCredentials, request: typeof fetch = fetch) {
         this.storage = storage; this.credentials = credentials; this.request = request;
     }
 
@@ -85,30 +81,6 @@ export class ScrobblingService {
 
     private async snapshot() { await this.writes; return structuredClone(await this.load()); }
 
-    private lastfmCredentials(data: ScrobbleData): LastfmCredentials {
-        return data.lastfmCredentials ?? this.credentials;
-    }
-
-    private lastfmConfigured(data: ScrobbleData): boolean {
-        const { apiKey, apiSecret } = this.lastfmCredentials(data);
-        return !!(apiKey && apiSecret);
-    }
-
-    async configureLastfm(key: string, secret: string) {
-        const apiKey = key.trim();
-        const apiSecret = secret.trim();
-        if (!/^[a-f0-9]{32}$/i.test(apiKey) || !/^[a-f0-9]{32}$/i.test(apiSecret)) {
-            throw new Error('Enter the 32-character API key and shared secret from your Last.fm API account.');
-        }
-        await this.edit((data) => {
-            const previous = this.lastfmCredentials(data);
-            if (previous.apiKey === apiKey && previous.apiSecret === apiSecret) return;
-            data.lastfmCredentials = { apiKey, apiSecret };
-            if (previous.apiKey || data.lastfm.pendingToken) data.lastfm = { enabled: false };
-        });
-        await this.retry();
-    }
-
     async status() {
         const data = await this.snapshot();
         const account = (provider: ScrobbleProvider) => ({
@@ -117,16 +89,16 @@ export class ScrobblingService {
             queued: data.queue.filter((item) => item.targets[provider]).length,
         });
         return {
-            lastfm: { ...account('lastfm'), configured: this.lastfmConfigured(data), pending: !!data.lastfm.pendingToken },
+            lastfm: { ...account('lastfm'), configured: !!(this.credentials.apiKey && this.credentials.apiSecret), pending: !!data.lastfm.pendingToken },
             listenbrainz: account('listenbrainz'),
         };
     }
 
     async taste() {
         const data = await this.snapshot();
-        if (!this.lastfmConfigured(data) || !data.lastfm.sessionKey || !data.lastfm.username) return [];
+        if (!data.lastfm.sessionKey || !data.lastfm.username) return [];
 
-        const result = await this.recentTracks(data);
+        const result = await this.recentTracks(data.lastfm.username);
         const recent = result.recenttracks?.track;
         const tracks = Array.isArray(recent) ? recent : recent ? [recent] : [];
         return tracks.flatMap((track: any) => {
@@ -149,9 +121,9 @@ export class ScrobblingService {
 
     async similarArtists() {
         const data = await this.snapshot();
-        if (!this.lastfmConfigured(data) || !data.lastfm.sessionKey || !data.lastfm.username) return [];
+        if (!data.lastfm.sessionKey || !data.lastfm.username) return [];
 
-        const result = await this.recentTracks(data);
+        const result = await this.recentTracks(data.lastfm.username);
         const recent = result.recenttracks?.track;
         const tracks = Array.isArray(recent) ? recent : recent ? [recent] : [];
         const known = new Set<string>();
@@ -170,7 +142,7 @@ export class ScrobblingService {
         const responses = await Promise.allSettled(seeds.map((artist) => this.lastfm('artist.getSimilar', {
             artist,
             limit: '10',
-        }, this.lastfmCredentials(data), undefined, false)));
+        }, undefined, false)));
         const matches = new Map<string, { name: string; score: number }>();
         for (const response of responses) {
             if (response.status !== 'fulfilled') continue;
@@ -188,21 +160,18 @@ export class ScrobblingService {
         return [...matches.values()].sort((a, b) => b.score - a.score).slice(0, 24).map(({ name }) => name);
     }
 
-    private recentTracks(data: ScrobbleData) {
+    private recentTracks(username: string) {
         return this.lastfm('user.getRecentTracks', {
-            user: data.lastfm.username!,
+            user: username,
             limit: '100',
-        }, this.lastfmCredentials(data), undefined, false);
+        }, undefined, false);
     }
 
-    private async lastfm(
-        method: string, values: Record<string, string>, { apiKey, apiSecret }: LastfmCredentials,
-        sessionKey?: string, signed = true,
-    ) {
-        if (!apiKey || !apiSecret) throw new Error('Add your Last.fm API credentials in Settings first.');
-        const params: Record<string, string> = { ...values, method, api_key: apiKey };
+    private async lastfm(method: string, values: Record<string, string>, sessionKey?: string, signed = true) {
+        if (!this.credentials.apiKey || !this.credentials.apiSecret) throw new Error('Last.fm is not configured in this build.');
+        const params: Record<string, string> = { ...values, method, api_key: this.credentials.apiKey };
         if (sessionKey) params.sk = sessionKey;
-        if (signed) params.api_sig = lastfmSignature(params, apiSecret);
+        if (signed) params.api_sig = lastfmSignature(params, this.credentials.apiSecret);
         const response = await this.request('https://ws.audioscrobbler.com/2.0/', {
             method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
             body: new URLSearchParams({ ...params, format: 'json' }).toString(), signal: AbortSignal.timeout(20_000),
@@ -214,27 +183,18 @@ export class ScrobblingService {
     }
 
     async startLastfm() {
-        const credentials = this.lastfmCredentials(await this.snapshot());
-        const result = await this.lastfm('auth.getToken', {}, credentials);
+        const result = await this.lastfm('auth.getToken', {});
         if (typeof result.token !== 'string' || !result.token) throw new Error('Last.fm did not return an authorization token.');
-        await this.edit((data) => {
-            const active = this.lastfmCredentials(data);
-            if (active.apiKey !== credentials.apiKey || active.apiSecret !== credentials.apiSecret) {
-                throw new Error('The Last.fm credentials changed. Start authorization again.');
-            }
-            data.lastfm.pendingToken = result.token;
-            data.lastfm.error = undefined;
-        });
-        return `https://www.last.fm/api/auth/?${new URLSearchParams({ api_key: credentials.apiKey, token: result.token })}`;
+        await this.edit((data) => { data.lastfm.pendingToken = result.token; data.lastfm.error = undefined; });
+        return `https://www.last.fm/api/auth/?${new URLSearchParams({ api_key: this.credentials.apiKey, token: result.token })}`;
     }
 
     async finishLastfm() {
         const data = await this.snapshot();
         if (!data.lastfm.pendingToken) throw new Error('Start Last.fm authorization first.');
-        const result = await this.lastfm('auth.getSession', { token: data.lastfm.pendingToken }, this.lastfmCredentials(data));
+        const result = await this.lastfm('auth.getSession', { token: data.lastfm.pendingToken });
         if (!result.session?.key || !result.session?.name) throw new Error('Approve Zeta in Last.fm, then finish connecting.');
         await this.edit((state) => {
-            if (state.lastfm.pendingToken !== data.lastfm.pendingToken) throw new Error('Last.fm authorization changed. Try again.');
             state.lastfm = { enabled: true, username: result.session.name, sessionKey: result.session.key };
         });
         await this.retry();
@@ -308,7 +268,7 @@ export class ScrobblingService {
             const values: Record<string, string> = { artist: track.artists.join(', '), track: track.title, duration: String(Math.round(track.duration)) };
             if (track.album) values.album = track.album;
             if (timestamp !== undefined) values.timestamp = String(timestamp);
-            const result = await this.lastfm(timestamp === undefined ? 'track.updateNowPlaying' : 'track.scrobble', values, this.lastfmCredentials(data), data.lastfm.sessionKey);
+            const result = await this.lastfm(timestamp === undefined ? 'track.updateNowPlaying' : 'track.scrobble', values, data.lastfm.sessionKey);
             const ignored = result.scrobbles?.scrobble?.ignoredMessage;
             if (ignored && Number(ignored.code)) throw new ApiError(ignored['#text'] || 'Last.fm ignored this scrobble.', true);
         } else {
@@ -326,7 +286,7 @@ export class ScrobblingService {
         if (!track.title || !track.artists.length) return;
         const data = await this.snapshot();
         await Promise.all((['lastfm', 'listenbrainz'] as const).map(async (provider) => {
-            if (!data[provider].enabled || !data[provider].username || (provider === 'lastfm' && !this.lastfmConfigured(data))) return;
+            if (!data[provider].enabled || !data[provider].username) return;
             try { await this.send(provider, data, track); }
             catch (error) { await this.edit((state) => {
                 state[provider].error = (error as Error).message;
@@ -360,7 +320,7 @@ export class ScrobblingService {
 
     private async flush() {
         const data = await this.snapshot();
-        const failed = new Set<ScrobbleProvider>(this.lastfmConfigured(data) ? [] : ['lastfm']);
+        const failed = new Set<ScrobbleProvider>();
         for (const listen of data.queue) {
             for (const provider of ['lastfm', 'listenbrainz'] as const) {
                 if (failed.has(provider) || !listen.targets[provider] || !data[provider].enabled || listen.targets[provider] !== data[provider].username) continue;
@@ -391,7 +351,6 @@ export function scrobblingRoutes(service: ScrobblingService) {
         scrobbleStatus: () => service.status(),
         scrobbleTaste: () => service.taste(),
         scrobbleSimilarArtists: () => service.similarArtists(),
-        scrobbleConfigureLastfm: (key: string, secret: string) => service.configureLastfm(key, secret),
         scrobbleLastfmStart: () => service.startLastfm(),
         scrobbleLastfmFinish: () => service.finishLastfm(),
         scrobbleListenbrainzConnect: (token: string) => service.connectListenbrainz(token),
